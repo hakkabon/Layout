@@ -6,6 +6,10 @@ pub mod ranks;
 pub mod dummy_nodes;
 pub mod crossings;
 pub mod coordinates;
+#[cfg(feature = "ffi")]
+pub mod ffi;
+#[cfg(feature = "ffi")]
+uniffi::setup_scaffolding!();
 pub use types::*;
 pub use validate::validate_graph;
 pub use cycles::break_cycles;

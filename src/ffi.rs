@@ -1,0 +1,258 @@
+//! UniFFI bindings: a single batched entry point for Swift (or any other
+//! UniFFI-supported language) to run the full layout pipeline in one call.
+//!
+//! Design notes:
+//! - **One call, not five.** `layout()` runs cycle breaking through edge
+//!   routing internally. Crossing the FFI boundary five times per layout
+//!   (once per phase) would multiply marshaling overhead for no benefit —
+//!   Swift never needs to inspect intermediate pipeline state.
+//! - **Opaque `u64` node ids.** Internally this crate requires dense,
+//!   zero-based `NodeId`s (see `LayoutGraph::add_node`). Callers' own node
+//!   identities (SPPF/GSS/syntax-tree nodes) won't naturally be dense, so
+//!   the FFI layer accepts an arbitrary `u64` per node and maps it to an
+//!   internal id itself; positions and edge routes are reported back
+//!   keyed on the caller's original ids.
+//! - **Panics never cross the boundary.** A Rust panic unwinding into
+//!   Swift is undefined behavior. Every path through `layout()` is wrapped
+//!   in `catch_unwind` and converted into an `FfiLayoutError`.
+//! - **Dummy nodes are not reported.** They're an internal routing detail;
+//!   their positions are already folded into each route's waypoints.
+
+use crate::{
+    assign_coordinates, assign_ranks, break_cycles, insert_dummy_nodes, order_layers,
+    route_edges, CoordAlgorithm, CoordConfig, LayoutEdge, LayoutError, LayoutGraph, LayoutNode,
+    NodeId, NodeType, RoutingStyle,
+};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiNode {
+    pub id: u64,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiEdge {
+    pub from: u64,
+    pub to: u64,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum FfiAlgorithm {
+    MedianRelax,
+    BrandesKopf,
+}
+
+impl From<FfiAlgorithm> for CoordAlgorithm {
+    fn from(a: FfiAlgorithm) -> Self {
+        match a {
+            FfiAlgorithm::MedianRelax => CoordAlgorithm::MedianRelax,
+            FfiAlgorithm::BrandesKopf => CoordAlgorithm::BrandesKopf,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum FfiRoutingStyle {
+    Straight,
+    Orthogonal,
+    Bezier,
+}
+
+impl From<FfiRoutingStyle> for RoutingStyle {
+    fn from(s: FfiRoutingStyle) -> Self {
+        match s {
+            FfiRoutingStyle::Straight => RoutingStyle::Straight,
+            FfiRoutingStyle::Orthogonal => RoutingStyle::Orthogonal,
+            FfiRoutingStyle::Bezier => RoutingStyle::Bezier,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiConfig {
+    pub h_gap: f32,
+    pub v_gap: f32,
+    pub relax_passes: u32,
+    /// Barycenter sweep count for crossing reduction. 4 is a reasonable
+    /// default; raise it for a "final" layout, lower it while the user is
+    /// interactively editing the graph.
+    pub sweeps: u32,
+    pub algorithm: FfiAlgorithm,
+    pub routing: FfiRoutingStyle,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct FfiPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiPosition {
+    pub id: u64,
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiEdgeRoute {
+    pub from: u64,
+    pub to: u64,
+    /// True if this edge was reversed by cycle breaking; draw the
+    /// arrowhead at the `from` end rather than the `to` end.
+    pub reversed: bool,
+    pub waypoints: Vec<FfiPoint>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiLayoutResult {
+    pub positions: Vec<FfiPosition>,
+    pub routes: Vec<FfiEdgeRoute>,
+    /// Self-loop edges extracted before layout (see module docs). Render
+    /// these separately, e.g. as a small loop decoration on the node.
+    pub self_loops: Vec<FfiEdge>,
+}
+
+#[derive(Debug, uniffi::Error)]
+#[uniffi(flat_error)]
+pub enum FfiLayoutError {
+    /// The input graph itself was invalid: a duplicate/unknown node id, or
+    /// (from `LayoutError`) a genuine cycle that survived cycle breaking.
+    InvalidGraph(String),
+    /// The layout engine panicked internally. This is always a bug in the
+    /// engine, not bad input — please report it with the graph that
+    /// triggered it.
+    Internal(String),
+}
+
+impl std::fmt::Display for FfiLayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FfiLayoutError::InvalidGraph(msg) => write!(f, "invalid graph: {msg}"),
+            FfiLayoutError::Internal(msg) => write!(f, "internal layout engine error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for FfiLayoutError {}
+
+impl From<LayoutError> for FfiLayoutError {
+    fn from(e: LayoutError) -> Self {
+        FfiLayoutError::InvalidGraph(e.to_string())
+    }
+}
+
+/// Runs the full layout pipeline (cycle breaking through edge routing) in
+/// one call and returns final node positions and edge routes, keyed on the
+/// caller's own `u64` node ids.
+#[uniffi::export]
+pub fn layout(
+    nodes: Vec<FfiNode>,
+    edges: Vec<FfiEdge>,
+    config: FfiConfig,
+) -> Result<FfiLayoutResult, FfiLayoutError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_pipeline(nodes, edges, &config)
+    }))
+    .unwrap_or_else(|_| {
+        Err(FfiLayoutError::Internal(
+            "layout engine panicked; this is a bug — please report it".to_string(),
+        ))
+    })
+}
+
+fn run_pipeline(
+    nodes: Vec<FfiNode>,
+    edges: Vec<FfiEdge>,
+    config: &FfiConfig,
+) -> Result<FfiLayoutResult, FfiLayoutError> {
+    let mut id_map: HashMap<u64, NodeId> = HashMap::with_capacity(nodes.len());
+    let mut external_ids: Vec<u64> = Vec::with_capacity(nodes.len());
+    let mut graph = LayoutGraph::default();
+
+    for n in &nodes {
+        if id_map.contains_key(&n.id) {
+            return Err(FfiLayoutError::InvalidGraph(format!(
+                "duplicate node id {}",
+                n.id
+            )));
+        }
+        let internal_id = graph.add_node(LayoutNode {
+            width: n.width,
+            height: n.height,
+            ..Default::default()
+        });
+        id_map.insert(n.id, internal_id);
+        external_ids.push(n.id);
+    }
+
+    for e in &edges {
+        let from = *id_map.get(&e.from).ok_or_else(|| {
+            FfiLayoutError::InvalidGraph(format!("edge references unknown node id {}", e.from))
+        })?;
+        let to = *id_map.get(&e.to).ok_or_else(|| {
+            FfiLayoutError::InvalidGraph(format!("edge references unknown node id {}", e.to))
+        })?;
+        graph.edges.push(LayoutEdge {
+            from,
+            to,
+            reversed: false,
+        });
+    }
+
+    let self_loops: Vec<FfiEdge> = graph
+        .extract_self_loops()
+        .iter()
+        .map(|e| FfiEdge {
+            from: external_ids[e.from],
+            to: external_ids[e.to],
+        })
+        .collect();
+
+    let _reversed = break_cycles(&mut graph);
+    let mut ranks = assign_ranks(&mut graph)?;
+    let chains = insert_dummy_nodes(&mut graph, &mut ranks)?;
+    order_layers(&mut graph, &mut ranks, config.sweeps as usize)?;
+
+    let coord_config = CoordConfig {
+        h_gap: config.h_gap,
+        v_gap: config.v_gap,
+        relax_passes: config.relax_passes as usize,
+        algorithm: config.algorithm.into(),
+    };
+    assign_coordinates(&mut graph, &ranks, &coord_config)?;
+    let routes = route_edges(&graph, &chains, config.routing.into())?;
+
+    let positions: Vec<FfiPosition> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.node_type == NodeType::Normal)
+        .map(|n| FfiPosition {
+            id: external_ids[n.id],
+            x: n.x,
+            y: n.y,
+        })
+        .collect();
+
+    let ffi_routes: Vec<FfiEdgeRoute> = routes
+        .into_iter()
+        .map(|r| FfiEdgeRoute {
+            from: external_ids[r.source],
+            to: external_ids[r.target],
+            reversed: r.reversed,
+            waypoints: r
+                .waypoints
+                .into_iter()
+                .map(|(x, y)| FfiPoint { x, y })
+                .collect(),
+        })
+        .collect();
+
+    Ok(FfiLayoutResult {
+        positions,
+        routes: ffi_routes,
+        self_loops,
+    })
+}

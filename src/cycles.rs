@@ -68,7 +68,7 @@ pub fn break_cycles(graph: &mut LayoutGraph) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{LayoutNode, NodeType};
+    use crate::types::{LayoutNode, NodeType, LayoutEdge};
 
     fn node(id: usize) -> LayoutNode {
         LayoutNode {

@@ -5,9 +5,10 @@
 //! - Weighted median relaxation (simpler, faster)
 //! - Brandes-Köpf alignment (produces more balanced layouts)
 
-use crate::types::{LayoutGraph, RankSystem, NodeId, EdgeChain, EdgeRoute, RoutingStyle};
+use crate::types::{LayoutGraph, RankSystem, NodeId, EdgeChain, EdgeRoute, RoutingStyle, LayoutError};
 
 /// Configuration for coordinate assignment algorithms.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct CoordConfig {
     /// Minimum horizontal gap between adjacent nodes in the same layer.
@@ -32,6 +33,7 @@ impl Default for CoordConfig {
 }
 
 /// Algorithm selection for x-coordinate assignment.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, Default)]
 pub enum CoordAlgorithm {
     /// Weighted median relaxation with compaction (simpler, O(N·passes))
@@ -50,11 +52,16 @@ pub enum CoordAlgorithm {
 ///    - BrandesKopf: four-pass alignment averaging (top-left, top-right, bottom-left, bottom-right)
 /// 3. Centering: shift all coordinates so bounding box is centered at origin
 ///
+/// # Errors
+/// Returns `LayoutError::DanglingEdge` if an edge references a node id
+/// outside `graph.nodes`, or `LayoutError::MissingRank` if `assign_ranks`
+/// hasn't been run.
+///
 /// # Arguments
 /// * `graph` - The layout graph with ordered layers
 /// * `ranks` - The rank system defining layers
 /// * `config` - Configuration for spacing and algorithm selection
-pub fn assign_coordinates(graph: &mut LayoutGraph, ranks: &RankSystem, config: &CoordConfig) {
+pub fn assign_coordinates(graph: &mut LayoutGraph, ranks: &RankSystem, config: &CoordConfig) -> Result<(), LayoutError> {
     let layer_count = ranks.layers.len();
 
     // Stage 1: Y-coordinate assignment (trivial)
@@ -85,10 +92,10 @@ pub fn assign_coordinates(graph: &mut LayoutGraph, ranks: &RankSystem, config: &
     // Stage 2: X-coordinate assignment based on selected algorithm
     let x_coords = match config.algorithm {
         CoordAlgorithm::MedianRelax => {
-            median_relax_x_coords(graph, ranks, config.h_gap, config.relax_passes)
+            median_relax_x_coords(graph, ranks, config.h_gap, config.relax_passes)?
         }
         CoordAlgorithm::BrandesKopf => {
-            brandes_kopf_x_coords(graph, ranks, config.h_gap)
+            brandes_kopf_x_coords(graph, ranks, config.h_gap)?
         }
     };
 
@@ -115,6 +122,8 @@ pub fn assign_coordinates(graph: &mut LayoutGraph, ranks: &RankSystem, config: &
         node.x = x_coords[i] - center_x;
         node.y = node.y - center_y;
     }
+
+    Ok(())
 }
 
 /// X-coordinate assignment using weighted median relaxation.
@@ -123,7 +132,7 @@ fn median_relax_x_coords(
     ranks: &RankSystem,
     h_gap: f32,
     relax_passes: usize,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, LayoutError> {
     let n = graph.nodes.len();
     let mut x_coords: Vec<f32> = vec![0.0; n];
     let mut widths: Vec<f32> = vec![0.0; n];
@@ -160,8 +169,12 @@ fn median_relax_x_coords(
     let mut down_neighbors: Vec<Vec<NodeId>> = vec![Vec::new(); n];
 
     for edge in &graph.edges {
-        let rank_from = graph.nodes[edge.from].rank.unwrap() as isize;
-        let rank_to = graph.nodes[edge.to].rank.unwrap() as isize;
+        let from_node = graph.nodes.get(edge.from)
+            .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
+        let to_node = graph.nodes.get(edge.to)
+            .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
+        let rank_from = from_node.rank.ok_or(LayoutError::MissingRank(edge.from))? as isize;
+        let rank_to = to_node.rank.ok_or(LayoutError::MissingRank(edge.to))? as isize;
         if rank_to - rank_from == 1 {
             down_neighbors[edge.from].push(edge.to);
             up_neighbors[edge.to].push(edge.from);
@@ -224,13 +237,21 @@ fn median_relax_x_coords(
         }
     }
 
-    x_coords
+    Ok(x_coords)
 }
 
-/// X-coordinate assignment using the Brandes-Köpf algorithm.
+/// X-coordinate assignment using a Brandes-Köpf-*inspired* heuristic.
 ///
-/// This algorithm produces more balanced and symmetric layouts by computing
-/// four independent alignments and averaging them:
+/// Note: this is **not** the published Brandes-Köpf algorithm, which
+/// resolves type-1/type-2 conflicts between dummy-node chains and regular
+/// edges and aligns nodes within resulting blocks. What's implemented here
+/// is simpler: four directional weighted-average passes (top-down/
+/// bottom-up × left/right-aligned) that are then averaged together. It's a
+/// reasonable and much cheaper approximation, but unlike true BK it does
+/// not guarantee that dummy-node chains crossing other edges come out
+/// straight. Produces more balanced and symmetric layouts than plain
+/// median relaxation by computing four independent alignments and
+/// averaging them:
 /// 1. Top-left: process layers top-to-bottom, align left
 /// 2. Top-right: process layers top-to-bottom, align right
 /// 3. Bottom-left: process layers bottom-to-top, align left
@@ -241,7 +262,7 @@ fn brandes_kopf_x_coords(
     graph: &mut LayoutGraph,
     ranks: &RankSystem,
     h_gap: f32,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, LayoutError> {
     let n = graph.nodes.len();
 
     // Build adjacency lists for neighbors within consecutive ranks
@@ -249,8 +270,12 @@ fn brandes_kopf_x_coords(
     let mut down_neighbors: Vec<Vec<NodeId>> = vec![Vec::new(); n];
 
     for edge in &graph.edges {
-        let rank_from = graph.nodes[edge.from].rank.unwrap() as isize;
-        let rank_to = graph.nodes[edge.to].rank.unwrap() as isize;
+        let from_node = graph.nodes.get(edge.from)
+            .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
+        let to_node = graph.nodes.get(edge.to)
+            .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
+        let rank_from = from_node.rank.ok_or(LayoutError::MissingRank(edge.from))? as isize;
+        let rank_to = to_node.rank.ok_or(LayoutError::MissingRank(edge.to))? as isize;
         if rank_to - rank_from == 1 {
             down_neighbors[edge.from].push(edge.to);
             up_neighbors[edge.to].push(edge.from);
@@ -283,7 +308,130 @@ fn brandes_kopf_x_coords(
         avg_x[i] = (x_coords[0][i] + x_coords[1][i] + x_coords[2][i] + x_coords[3][i]) / 4.0;
     }
 
-    avg_x
+    // Each of the four alignments individually respects h_gap spacing, but
+    // the average of four different valid layouts does not — most visibly
+    // on symmetric structures (e.g. a diamond), where sibling nodes with
+    // identical local structure average to the *same* x and end up
+    // overlapping. `repair_layer_spacing` fixes that: within each layer it
+    // finds the closest (least-squares) set of positions that preserves
+    // each node's already-fixed `order` and satisfies the minimum-gap
+    // constraint, via isotonic regression (pool-adjacent-violators). Unlike
+    // a naive "anchor the first node, push the rest right" compaction,
+    // PAVA distributes the correction across every violating node — so two
+    // overlapping siblings end up centered symmetrically around their
+    // shared mean, not with one anchored and the other shoved aside.
+    //
+    // Fixing sibling spacing alone can still leave a parent/child off
+    // center relative to its now-separated neighbors (e.g. a diamond's
+    // root should sit above the midpoint of its two children). So
+    // alternate a recentering step — pull each node toward the mean of
+    // *all* its neighbors, up and down together — with re-repairing
+    // spacing, letting both effects settle over a few passes.
+    let mut combined_neighbors: Vec<Vec<NodeId>> = vec![Vec::new(); n];
+    for id in 0..n {
+        combined_neighbors[id].extend(&up_neighbors[id]);
+        combined_neighbors[id].extend(&down_neighbors[id]);
+    }
+
+    repair_layer_spacing(&mut avg_x, graph, ranks, h_gap);
+    for _ in 0..8 {
+        let mut preferred: Vec<f32> = avg_x.clone();
+        for id in 0..n {
+            if !combined_neighbors[id].is_empty() {
+                let sum: f32 = combined_neighbors[id].iter().map(|&nb| avg_x[nb]).sum();
+                preferred[id] = sum / combined_neighbors[id].len() as f32;
+            }
+        }
+        // Damped update: a full replacement (avg_x = preferred) is a
+        // Jacobi-style simultaneous update, which can oscillate between two
+        // states indefinitely rather than converge (observed on the
+        // diamond test case above). Blending old and new breaks the cycle.
+        for id in 0..n {
+            avg_x[id] = 0.5 * avg_x[id] + 0.5 * preferred[id];
+        }
+        repair_layer_spacing(&mut avg_x, graph, ranks, h_gap);
+    }
+
+    Ok(avg_x)
+}
+
+/// Within each layer, finds the closest set of positions (in a
+/// least-squares sense) to the given `x` values that preserves each node's
+/// already-fixed `order` and satisfies the minimum-gap constraint implied
+/// by `h_gap` and node widths.
+///
+/// Implemented via isotonic regression (pool-adjacent-violators, PAVA):
+/// subtracting each node's cumulative minimum offset from its position
+/// turns "positions respect minimum gaps, in order" into "positions are
+/// non-decreasing," which PAVA solves optimally in O(layer size). This is
+/// what makes the repair *symmetric* — when two equal-weight positions
+/// violate the ordering, PAVA pools them to their shared mean rather than
+/// anchoring one and pushing the other.
+fn repair_layer_spacing(x: &mut [f32], graph: &LayoutGraph, ranks: &RankSystem, h_gap: f32) {
+    for layer in &ranks.layers {
+        if layer.len() <= 1 {
+            continue;
+        }
+        let mut ordered: Vec<NodeId> = layer.clone();
+        ordered.sort_by_key(|&id| graph.nodes[id].order.unwrap_or(0));
+        ordered.retain(|&id| id < graph.nodes.len());
+        if ordered.len() <= 1 {
+            continue;
+        }
+
+        // Cumulative minimum offset from the first node in the layer.
+        let mut offsets: Vec<f32> = Vec::with_capacity(ordered.len());
+        let mut cum = 0.0f32;
+        for (i, &id) in ordered.iter().enumerate() {
+            if i == 0 {
+                offsets.push(0.0);
+            } else {
+                let prev_half = graph.nodes[ordered[i - 1]].width / 2.0;
+                let half = graph.nodes[id].width / 2.0;
+                cum += prev_half + h_gap + half;
+                offsets.push(cum);
+            }
+        }
+
+        let adjusted: Vec<f32> = ordered.iter().zip(&offsets)
+            .map(|(&id, &off)| x[id] - off)
+            .collect();
+        let solved = isotonic_regression(&adjusted);
+        for (i, &id) in ordered.iter().enumerate() {
+            x[id] = solved[i] + offsets[i];
+        }
+    }
+}
+
+/// Finds the non-decreasing sequence closest to `values` in the
+/// least-squares sense, via the pool-adjacent-violators algorithm (PAVA).
+/// O(n) amortized.
+fn isotonic_regression(values: &[f32]) -> Vec<f32> {
+    // Each entry in the stack is a pooled block: (mean, count).
+    let mut blocks: Vec<(f32, usize)> = Vec::new();
+    for &v in values {
+        let mut mean = v;
+        let mut count = 1usize;
+        while let Some(&(prev_mean, prev_count)) = blocks.last() {
+            if prev_mean > mean {
+                blocks.pop();
+                let total = prev_count + count;
+                mean = (prev_mean * prev_count as f32 + mean * count as f32) / total as f32;
+                count = total;
+            } else {
+                break;
+            }
+        }
+        blocks.push((mean, count));
+    }
+
+    let mut result = Vec::with_capacity(values.len());
+    for (mean, count) in blocks {
+        for _ in 0..count {
+            result.push(mean);
+        }
+    }
+    result
 }
 
 /// Computes a single Brandes-Köpf alignment pass.
@@ -409,9 +557,13 @@ fn compute_alignment(
 /// * `chains` - Edge chains from phase 2a
 /// * `style` - The routing style (Straight, Orthogonal, or Bezier)
 ///
+/// # Errors
+/// Returns `LayoutError::DanglingEdge` if a chain references a node id
+/// outside `graph.nodes`.
+///
 /// # Returns
 /// A vector of `EdgeRoute` structures with waypoints for each edge.
-pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyle) -> Vec<EdgeRoute> {
+pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyle) -> Result<Vec<EdgeRoute>, LayoutError> {
     let mut routes = Vec::new();
 
     for chain in chains {
@@ -419,10 +571,8 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
         let mut waypoints: Vec<(f32, f32)> = Vec::new();
 
         for (i, &node_id) in chain.chain.iter().enumerate() {
-            if node_id >= graph.nodes.len() {
-                continue;
-            }
-            let node = &graph.nodes[node_id];
+            let node = graph.nodes.get(node_id)
+                .ok_or(LayoutError::DanglingEdge { from: chain.source, to: chain.target })?;
             let cx = node.x; // center x
             let cy = node.y + node.height; // bottom of node
 
@@ -533,7 +683,7 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
         routes.push(route);
     }
 
-    routes
+    Ok(routes)
 }
 
 #[cfg(test)]
@@ -572,7 +722,7 @@ mod tests {
             algorithm: CoordAlgorithm::MedianRelax,
             ..Default::default()
         };
-        assign_coordinates(&mut graph, &ranks, &config);
+        assign_coordinates(&mut graph, &ranks, &config).unwrap();
 
         // Nodes should have non-zero, different coordinates
         assert_ne!(graph.nodes[0].y, graph.nodes[1].y);
@@ -607,7 +757,7 @@ mod tests {
             algorithm: CoordAlgorithm::BrandesKopf,
             ..Default::default()
         };
-        assign_coordinates(&mut graph, &ranks, &config);
+        assign_coordinates(&mut graph, &ranks, &config).unwrap();
 
         // All nodes should have coordinates assigned
         for node in &graph.nodes {
@@ -661,7 +811,7 @@ mod tests {
             relax_passes: 4,
             ..Default::default()
         };
-        assign_coordinates(&mut graph_median, &ranks, &config_median);
+        assign_coordinates(&mut graph_median, &ranks, &config_median).unwrap();
 
         // Test with Brandes-Köpf
         let mut graph_bk = base_graph();
@@ -678,7 +828,7 @@ mod tests {
             algorithm: CoordAlgorithm::BrandesKopf,
             ..Default::default()
         };
-        assign_coordinates(&mut graph_bk, &ranks, &config_bk);
+        assign_coordinates(&mut graph_bk, &ranks, &config_bk).unwrap();
 
         // Both should produce valid layouts
         for g in [&graph_median, &graph_bk] {
@@ -702,7 +852,7 @@ mod tests {
             chain: vec![0, 1],
         }];
 
-        let routes = route_edges(&graph, &chains, RoutingStyle::Straight);
+        let routes = route_edges(&graph, &chains, RoutingStyle::Straight).unwrap();
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].waypoints.len(), 2);
     }
@@ -721,7 +871,7 @@ mod tests {
             chain: vec![0, 1, 2],
         }];
 
-        let routes = route_edges(&graph, &chains, RoutingStyle::Bezier);
+        let routes = route_edges(&graph, &chains, RoutingStyle::Bezier).unwrap();
         assert_eq!(routes.len(), 1);
         // Bezier with 3 waypoints produces 4 points per segment × 2 segments = more than 4
         // Actually for 3 waypoints we get 2 segments, each with 4 points but shared
@@ -731,5 +881,53 @@ mod tests {
         // Segment 1: C1, C2, P1 (3 more points)
         // Total: 1 + 3 + 3 = 7 points
         assert!(routes[0].waypoints.len() >= 4, "Bezier should produce at least 4 waypoints");
+    }
+
+    #[test]
+    fn brandes_kopf_no_sibling_overlap() {
+        // Regression test: averaging four independently-compacted BK
+        // alignments can collapse siblings that share identical local
+        // structure onto the exact same x-coordinate. On this diamond,
+        // nodes 1 and 2 both connect only to node 0 above and node 3
+        // below, which used to make them average to the same x.
+        let mut graph = LayoutGraph {
+            nodes: vec![node(0), node(1), node(2), node(3)],
+            edges: vec![
+                LayoutEdge { from: 0, to: 1, reversed: false },
+                LayoutEdge { from: 0, to: 2, reversed: false },
+                LayoutEdge { from: 1, to: 3, reversed: false },
+                LayoutEdge { from: 2, to: 3, reversed: false },
+            ],
+        };
+        graph.nodes[0].rank = Some(0);
+        graph.nodes[1].rank = Some(1);
+        graph.nodes[2].rank = Some(1);
+        graph.nodes[3].rank = Some(2);
+        graph.nodes[0].order = Some(0);
+        graph.nodes[1].order = Some(0);
+        graph.nodes[2].order = Some(1);
+        graph.nodes[3].order = Some(0);
+
+        let ranks = RankSystem {
+            layers: vec![vec![0], vec![1, 2], vec![3]],
+        };
+        let config = CoordConfig {
+            algorithm: CoordAlgorithm::BrandesKopf,
+            h_gap: 20.0,
+            ..Default::default()
+        };
+        assign_coordinates(&mut graph, &ranks, &config).unwrap();
+
+        let gap = (graph.nodes[2].x - graph.nodes[1].x).abs();
+        let min_required = graph.nodes[1].width / 2.0 + config.h_gap + graph.nodes[2].width / 2.0;
+        assert!(
+            gap >= min_required - 0.01,
+            "siblings must be at least h_gap apart, got gap={gap}, required={min_required}"
+        );
+
+        // And it should still be symmetric, as the earlier test checks.
+        let mid_0_3 = (graph.nodes[0].x + graph.nodes[3].x) / 2.0;
+        let mid_1_2 = (graph.nodes[1].x + graph.nodes[2].x) / 2.0;
+        assert!((mid_0_3 - mid_1_2).abs() < 0.01, "diamond should be exactly symmetric");
     }
 }

@@ -3,7 +3,15 @@
 //! Implements the barycenter heuristic with alternating sweeps and
 //! transpose cleanup to minimize edge crossings between adjacent layers.
 
-use crate::types::{LayoutGraph, RankSystem, NodeId, RankId};
+use crate::types::{LayoutGraph, RankSystem, NodeId, RankId, LayoutError};
+
+/// Upper bound on transpose sweeps per call to `order_layers`. Each full
+/// sweep strictly decreases the crossing count when it makes any swap, so
+/// the loop is guaranteed to terminate on its own — but on a large or
+/// pathological graph that could still mean an unbounded number of O(N)
+/// sweeps. This cap trades a small amount of layout quality on worst-case
+/// inputs for a predictable upper bound on work done.
+const MAX_TRANSPOSE_PASSES: usize = 100;
 
 /// Orders nodes within each layer to minimize edge crossings.
 ///
@@ -13,19 +21,28 @@ use crate::types::{LayoutGraph, RankSystem, NodeId, RankId};
 /// # Preconditions
 /// - Every edge must span exactly one rank (run `insert_dummy_nodes` first).
 ///
+/// # Errors
+/// Returns `LayoutError::DanglingEdge` if an edge references a node id
+/// outside `graph.nodes`, or `LayoutError::MissingRank` if `assign_ranks`
+/// hasn't been run.
+///
 /// # Arguments
 /// * `graph` - The layout graph with single-rank edges
 /// * `ranks` - The rank system defining layers
 /// * `sweeps` - Number of barycenter sweep iterations
-pub fn order_layers(graph: &mut LayoutGraph, ranks: &mut RankSystem, sweeps: usize) {
+pub fn order_layers(graph: &mut LayoutGraph, ranks: &mut RankSystem, sweeps: usize) -> Result<(), LayoutError> {
     let n = graph.nodes.len();
     let mut up_neighbors: Vec<Vec<NodeId>> = vec![Vec::new(); n];
     let mut down_neighbors: Vec<Vec<NodeId>> = vec![Vec::new(); n];
 
     // Build adjacency lists for single-rank edges
     for edge in &graph.edges {
-        let rank_from = graph.nodes[edge.from].rank.unwrap() as isize;
-        let rank_to = graph.nodes[edge.to].rank.unwrap() as isize;
+        let from_node = graph.nodes.get(edge.from)
+            .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
+        let to_node = graph.nodes.get(edge.to)
+            .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
+        let rank_from = from_node.rank.ok_or(LayoutError::MissingRank(edge.from))? as isize;
+        let rank_to = to_node.rank.ok_or(LayoutError::MissingRank(edge.to))? as isize;
         debug_assert!(
             (rank_to - rank_from).abs() == 1,
             "requires single-rank edges; run Dummy Node Insertion first"
@@ -52,6 +69,8 @@ pub fn order_layers(graph: &mut LayoutGraph, ranks: &mut RankSystem, sweeps: usi
         // Transpose pass to clean up adjacent swaps
         transpose_pass(graph, ranks, &up_neighbors, &down_neighbors);
     }
+
+    Ok(())
 }
 
 fn reorder_layer_by_barycenter(
@@ -99,8 +118,10 @@ fn transpose_pass(
     down_neighbors: &[Vec<NodeId>],
 ) {
     let mut improved = true;
-    while improved {
+    let mut pass = 0;
+    while improved && pass < MAX_TRANSPOSE_PASSES {
         improved = false;
+        pass += 1;
         for layer_idx in 0..ranks.layers.len() {
             let len = ranks.layers[layer_idx].len();
             for i in 0..len.saturating_sub(1) {
@@ -217,7 +238,7 @@ mod tests {
         }
 
         let before = count_total_crossings(&graph, &ranks);
-        order_layers(&mut graph, &mut ranks, 4);
+        order_layers(&mut graph, &mut ranks, 4).unwrap();
         let after = count_total_crossings(&graph, &ranks);
 
         assert!(before >= 1, "test setup should start with a crossing");
@@ -249,7 +270,7 @@ mod tests {
         }
 
         let before = count_total_crossings(&graph, &ranks);
-        order_layers(&mut graph, &mut ranks, 4);
+        order_layers(&mut graph, &mut ranks, 4).unwrap();
         let after = count_total_crossings(&graph, &ranks);
 
         assert_eq!(before, 0);
@@ -274,7 +295,7 @@ mod tests {
             }
         }
 
-        order_layers(&mut graph, &mut ranks, 4);
+        order_layers(&mut graph, &mut ranks, 4).unwrap();
         assert_eq!(count_total_crossings(&graph, &ranks), 0);
     }
 }

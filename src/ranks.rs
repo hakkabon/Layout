@@ -19,6 +19,7 @@ impl LayoutPipeline {
     /// # Errors
     /// Returns `LayoutError::CyclicGraph` if the graph contains a cycle.
     pub fn assign_ranks(graph: &mut LayoutGraph) -> Result<RankSystem, LayoutError> {
+        crate::validate::validate_graph(graph)?;
         let n = graph.nodes.len();
 
         // Build adjacency and in-degree counts

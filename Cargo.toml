@@ -5,4 +5,23 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+name = "layout_engine"
+crate-type = ["lib", "cdylib", "staticlib"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+uniffi = { version = "0.28", optional = true }
+
+[features]
+serde = ["dep:serde"]
+ffi = ["dep:uniffi"]
+# Separate from `ffi` because the bindgen CLI's dependency tree (clap et
+# al.) requires a newer edition than the core `ffi` feature does. Only
+# needed on the machine that generates Swift bindings, not at runtime.
+bindgen-cli = ["ffi", "uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen-cli"]

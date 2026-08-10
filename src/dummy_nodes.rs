@@ -4,23 +4,35 @@
 //! single-rank edges by inserting dummy nodes. This is required before
 //! the crossing-reduction, which only handles adjacent-layer edges.
  
-use crate::types::{LayoutGraph, LayoutNode, NodeType, LayoutEdge, EdgeChain};
+use crate::types::{LayoutGraph, LayoutNode, NodeType, LayoutEdge, EdgeChain, LayoutError};
  
 /// Inserts dummy nodes for edges that span more than one rank.
 ///
 /// Returns a vector of `EdgeChain` structures tracking how each original
 /// edge was decomposed into single-rank segments.
 ///
+/// # Errors
+/// Returns `LayoutError::DanglingEdge` if an edge references a node id
+/// outside `graph.nodes`, or `LayoutError::MissingRank` if `assign_ranks`
+/// hasn't been run (or a node was added afterward without a rank).
+///
 /// # Complexity
 /// O(E · S) where E is the number of edges and S is the average edge span.
-pub fn insert_dummy_nodes(graph: &mut LayoutGraph, ranks: &mut crate::types::RankSystem) -> Vec<EdgeChain> {
+pub fn insert_dummy_nodes(
+    graph: &mut LayoutGraph,
+    ranks: &mut crate::types::RankSystem,
+) -> Result<Vec<EdgeChain>, LayoutError> {
     let mut chains = Vec::new();
     let mut new_edges = Vec::new();
 
     // Process each edge
     for edge in &graph.edges {
-        let rank_from = graph.nodes[edge.from].rank.unwrap();
-        let rank_to = graph.nodes[edge.to].rank.unwrap();
+        let from_node = graph.nodes.get(edge.from)
+            .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
+        let to_node = graph.nodes.get(edge.to)
+            .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
+        let rank_from = from_node.rank.ok_or(LayoutError::MissingRank(edge.from))?;
+        let rank_to = to_node.rank.ok_or(LayoutError::MissingRank(edge.to))?;
         let span = rank_to as isize - rank_from as isize;
 
         if span == 1 {
@@ -118,13 +130,13 @@ pub fn insert_dummy_nodes(graph: &mut LayoutGraph, ranks: &mut crate::types::Ran
         }
     }
 
-    chains
+    Ok(chains)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{LayoutNode, NodeType, LayoutEdge, RankSystem};
+    use crate::types::{LayoutNode, NodeType, LayoutEdge, RankSystem, NodeId};
 
     fn node(id: NodeId) -> LayoutNode {
         LayoutNode {
@@ -151,7 +163,7 @@ mod tests {
         graph.nodes[0].rank = Some(0);
         graph.nodes[1].rank = Some(1);
 
-        let chains = insert_dummy_nodes(&mut graph, &mut ranks);
+        let chains = insert_dummy_nodes(&mut graph, &mut ranks).unwrap();
 
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].chain, vec![0, 1]);
@@ -171,7 +183,7 @@ mod tests {
         graph.nodes[0].rank = Some(0);
         graph.nodes[1].rank = Some(3);
 
-        let chains = insert_dummy_nodes(&mut graph, &mut ranks);
+        let chains = insert_dummy_nodes(&mut graph, &mut ranks).unwrap();
 
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].chain.len(), 4); // source + 2 dummies + target
@@ -197,12 +209,29 @@ mod tests {
         graph.nodes[1].rank = Some(1);
         graph.nodes[3].rank = Some(3);
 
-        let chains = insert_dummy_nodes(&mut graph, &mut ranks);
+        let chains = insert_dummy_nodes(&mut graph, &mut ranks).unwrap();
 
         assert_eq!(chains.len(), 2);
         // First chain should be short
         assert_eq!(chains[0].chain, vec![0, 1]);
         // Second chain should have dummies
         assert_eq!(chains[1].chain.len(), 4);
+    }
+
+    #[test]
+    fn missing_rank_returns_error_instead_of_panicking() {
+        // Regression test: calling insert_dummy_nodes (or any later phase)
+        // before assign_ranks used to panic via unwrap(). It should now
+        // report LayoutError::MissingRank.
+        let mut graph = LayoutGraph {
+            nodes: vec![node(0), node(1)],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+        };
+        let mut ranks = RankSystem { layers: vec![] };
+        // Note: node ranks are never set here.
+        match insert_dummy_nodes(&mut graph, &mut ranks) {
+            Err(LayoutError::MissingRank(_)) => {}
+            other => panic!("expected LayoutError::MissingRank, got {other:?}"),
+        }
     }
 }
