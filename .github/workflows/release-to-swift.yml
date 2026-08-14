@@ -60,7 +60,7 @@ jobs:
           CHECKSUM=$(swift package compute-checksum Layout.xcframework.zip)
           
           # 2. Clone the destination Swift wrapper repository
-          git clone https://x-access-token:${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}@://github.com{{ env.SWIFT_REPO }}.git swift-repo-dir
+          git clone https://x-access-token:${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}@github.com/${{ env.SWIFT_REPO }}.git swift-repo-dir
           
           # 3. Copy the freshly generated UniFFI Swift binding source file into the Swift repo
           cp staging_swift/*.swift swift-repo-dir/Sources/SwiftLayout/
