@@ -41,9 +41,27 @@ jobs:
 
       - name: Extract Generated Swift Bindings
         run: |
+          # Debug: Check if bindings directory exists and what it contains
+          if [ -d "RustLayout/bindings/swift" ]; then
+            echo "Contents of RustLayout/bindings/swift:"
+            ls -la RustLayout/bindings/swift/
+          else
+            echo "ERROR: RustLayout/bindings/swift directory does not exist!"
+            exit 1
+          fi
+          
+          # Check if there are any .swift files
+          if ! ls RustLayout/bindings/swift/*.swift 1> /dev/null 2>&1; then
+            echo "ERROR: No .swift files found in RustLayout/bindings/swift/"
+            exit 1
+          fi
+          
           # Keep track of the generated Swift file name so we can commit it to the Swift repo
           mkdir -p staging_swift
           cp RustLayout/bindings/swift/*.swift staging_swift/
+          
+          echo "Copied Swift files:"
+          ls -la staging_swift/
 
       - name: Create Release Artifact in Rust Layout Repo
         uses: softprops/action-gh-release@v2
