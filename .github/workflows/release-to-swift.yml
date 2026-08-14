@@ -23,6 +23,7 @@ jobs:
       - name: Setup Rust MacCatalyst Toolchain
         run: |
           rustup toolchain install nightly
+          rustup +nightly component add rust-src
           rustup +nightly target add aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 
       - name: Compile XCFramework and Bindings via Makefile
