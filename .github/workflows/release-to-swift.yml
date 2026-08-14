@@ -8,6 +8,8 @@ on:
 jobs:
   build-and-deploy:
     runs-on: macos-latest
+    permissions:
+      contents: write
     env:
       SWIFT_REPO: "hakkabon/Swift-Layout"
       GH_TOKEN: ${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}
