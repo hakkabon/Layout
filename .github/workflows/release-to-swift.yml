@@ -1,0 +1,77 @@
+name: Build and Ship to Swift Wrapper
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-and-deploy:
+    runs-on: macos-latest
+    env:
+      SWIFT_REPO: "hakkabon/Swift-Layout"
+      GH_TOKEN: ${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}
+    steps:
+      - name: Checkout Rust Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios, aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Setup Rust MacCatalyst Toolchain
+        run: |
+          rustup toolchain install nightly
+          rustup +nightly target add aarch64-apple-ios-macabi x86_64-apple-ios-macabi
+
+      - name: Compile XCFramework and Bindings via Makefile
+        run: |
+          # Runs clean, macos, ios, bindings, and xcframework targets
+          make clean macos ios bindings xcframework
+
+      - name: Zip Generated XCFramework
+        run: |
+          cd RustLayout/Sources
+          zip -r ../../Layout.xcframework.zip Layout.xcframework
+          cd ../..
+
+      - name: Extract Generated Swift Bindings
+        run: |
+          # Keep track of the generated Swift file name so we can commit it to the Swift repo
+          mkdir -p staging_swift
+          cp RustLayout/bindings/swift/*.swift staging_swift/
+
+      - name: Create Release Artifact in Rust Layout Repo
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Layout.xcframework.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-Update Swift-Layout Repository
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          
+          # 1. Compute the cryptographic SHA256 checksum needed by Swift PM
+          CHECKSUM=$(swift package compute-checksum Layout.xcframework.zip)
+          
+          # 2. Clone the destination Swift wrapper repository
+          git clone https://x-access-token:${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}@://github.com{{ env.SWIFT_REPO }}.git swift-repo-dir
+          
+          # 3. Copy the freshly generated UniFFI Swift binding source file into the Swift repo
+          cp staging_swift/*.swift swift-repo-dir/Sources/SwiftLayout/
+          
+          cd swift-repo-dir
+          
+          # 4. Inject the current version tag and calculated binary checksum into Package.swift
+          sed -i '' "s/__VERSION__/${VERSION}/g" Package.swift
+          sed -i '' "s/__CHECKSUM__/${CHECKSUM}/g" Package.swift
+          
+          # 5. Commit changes and tag the Swift repository 
+          git config --global user.name "Hakkabon Rust CI"
+          git config --global user.email "ci@hakkabon.dev"
+          git add Package.swift Sources/SwiftLayout/
+          git commit -m "chore: automated sync for native version ${VERSION}"
+          git tag ${VERSION}
+          git push origin main --tags
