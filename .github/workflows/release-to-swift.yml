@@ -72,28 +72,33 @@ jobs:
 
       - name: Auto-Update Swift-Layout Repository
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          # 1. Capture the raw git tag from Rust (e.g., v1.0.4)
+          RUST_TAG=${GITHUB_REF#refs/tags/}
           
-          # 1. Compute the cryptographic SHA256 checksum needed by Swift PM
+          # 2. Strip the leading 'v' to make it a valid Swift SemVer string (e.g., 1.0.4)
+          SWIFT_VERSION=${RUST_TAG#v}
+          
+          # 3. Compute the cryptographic SHA256 checksum needed by Swift PM
           CHECKSUM=$(swift package compute-checksum Layout.xcframework.zip)
           
-          # 2. Clone the destination Swift wrapper repository
-          git clone https://x-access-token:${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}@github.com/${{ env.SWIFT_REPO }}.git swift-repo-dir
+          # 4. Clone the destination Swift wrapper repository
+          git clone https://x-access-token:${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}@://github.com{{ env.SWIFT_REPO }}.git swift-repo-dir
           
-          # 3. Copy the freshly generated UniFFI Swift binding source file into the Swift repo
+          # 5. Copy the freshly generated UniFFI Swift binding source file into the Swift repo
           cp staging_swift/*.swift swift-repo-dir/Sources/SwiftLayout/
           
           cd swift-repo-dir
           
-          # 4. Explicitly rewrite the target URL and Checksum lines directly
-          # \1 restores the exact leading whitespace captured by \([[:space:]]*\)
-          sed -i '' "s@\([[:space:]]*\)url: \".*\"@\1url: \"https://github.com{VERSION}/Layout.xcframework.zip\"@g" Package.swift
-          sed -i '' "s@\([[:space:]]*\)checksum: \".*\"@\1checksum: \"${CHECKSUM}\"@g" Package.swift
+          # 6. Rewrite the target URL using the RUST_TAG (which needs the 'v' for the release path)
+          sed -i '' "s@\([[:space:]]*\)url: \".*\"@\1url: \"https://github.com\${RUST_TAG}/Layout.xcframework.zip\"@g" Package.swift
+          sed -i '' "s@\([[:space:]]*\)checksum: \".*\"@\1checksum: \"\${CHECKSUM}\"@g" Package.swift
           
-          # 5. Commit changes and tag the Swift repository 
+          # 7. Commit changes and tag the Swift repository using SWIFT_VERSION (NO 'v'!)
           git config --global user.name "Hakkabon Rust CI"
           git config --global user.email "ci@hakkabon.dev"
           git add Package.swift Sources/SwiftLayout/
-          git commit -m "chore: automated sync for native version ${VERSION}"
-          git tag ${VERSION}
+          git commit -m "chore: automated sync for native version ${SWIFT_VERSION}"
+          
+          # Create pure number tag for Swift PM compliance
+          git tag ${SWIFT_VERSION}
           git push origin main --tags
