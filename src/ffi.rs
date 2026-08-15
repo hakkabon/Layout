@@ -20,8 +20,8 @@
 
 use crate::{
     assign_coordinates, assign_ranks, break_cycles, insert_dummy_nodes, order_layers,
-    route_edges, CoordAlgorithm, CoordConfig, LayoutEdge, LayoutError, LayoutGraph, LayoutNode,
-    NodeId, NodeType, RoutingStyle,
+    route_edges, CoordAlgorithm, CoordConfig, EdgeChain, LayoutDirection, LayoutEdge, LayoutError,
+    LayoutGraph, LayoutNode, NodeId, NodeType, RoutingStyle,
 };
 use std::collections::HashMap;
 
@@ -70,6 +70,21 @@ impl From<FfiRoutingStyle> for RoutingStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum FfiDirection {
+    TopToBottom,
+    LeftToRight,
+}
+
+impl From<FfiDirection> for LayoutDirection {
+    fn from(d: FfiDirection) -> Self {
+        match d {
+            FfiDirection::TopToBottom => LayoutDirection::TopToBottom,
+            FfiDirection::LeftToRight => LayoutDirection::LeftToRight,
+        }
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiConfig {
     pub h_gap: f32,
@@ -81,12 +96,37 @@ pub struct FfiConfig {
     pub sweeps: u32,
     pub algorithm: FfiAlgorithm,
     pub routing: FfiRoutingStyle,
+    pub direction: FfiDirection,
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Record)]
 pub struct FfiPoint {
     pub x: f32,
     pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct FfiRect {
+    pub min_x: f32,
+    pub min_y: f32,
+    pub max_x: f32,
+    pub max_y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum FfiPathSegment {
+    Line {
+        start: FfiPoint,
+        end: FfiPoint,
+    },
+    CubicCurve {
+        start: FfiPoint,
+        control1: FfiPoint,
+        control2: FfiPoint,
+        end: FfiPoint,
+    },
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -103,16 +143,18 @@ pub struct FfiEdgeRoute {
     /// True if this edge was reversed by cycle breaking; draw the
     /// arrowhead at the `from` end rather than the `to` end.
     pub reversed: bool,
+    pub is_self_loop: bool,
     pub waypoints: Vec<FfiPoint>,
+    pub segments: Vec<FfiPathSegment>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiLayoutResult {
     pub positions: Vec<FfiPosition>,
     pub routes: Vec<FfiEdgeRoute>,
-    /// Self-loop edges extracted before layout (see module docs). Render
-    /// these separately, e.g. as a small loop decoration on the node.
+    /// Self-loop edges extracted before layout (see module docs).
     pub self_loops: Vec<FfiEdge>,
+    pub bounds: FfiRect,
 }
 
 #[derive(Debug, uniffi::Error)]
@@ -202,8 +244,8 @@ fn run_pipeline(
         });
     }
 
-    let self_loops: Vec<FfiEdge> = graph
-        .extract_self_loops()
+    let raw_self_loops = graph.extract_self_loops();
+    let self_loops: Vec<FfiEdge> = raw_self_loops
         .iter()
         .map(|e| FfiEdge {
             from: external_ids[e.from],
@@ -213,7 +255,19 @@ fn run_pipeline(
 
     let _reversed = break_cycles(&mut graph);
     let mut ranks = assign_ranks(&mut graph)?;
-    let chains = insert_dummy_nodes(&mut graph, &mut ranks)?;
+    let mut chains = insert_dummy_nodes(&mut graph, &mut ranks)?;
+
+    // Add self-loops as explicit edge chains so route_edges generates routes for them
+    for loop_edge in raw_self_loops {
+        chains.push(EdgeChain {
+            source: loop_edge.from,
+            target: loop_edge.to,
+            reversed: false,
+            is_self_loop: true,
+            chain: vec![loop_edge.from],
+        });
+    }
+
     order_layers(&mut graph, &mut ranks, config.sweeps as usize)?;
 
     let coord_config = CoordConfig {
@@ -221,6 +275,7 @@ fn run_pipeline(
         v_gap: config.v_gap,
         relax_passes: config.relax_passes as usize,
         algorithm: config.algorithm.into(),
+        direction: config.direction.into(),
     };
     assign_coordinates(&mut graph, &ranks, &coord_config)?;
     let routes = route_edges(&graph, &chains, config.routing.into())?;
@@ -236,17 +291,94 @@ fn run_pipeline(
         })
         .collect();
 
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+
+    for n in graph.nodes.iter().filter(|n| n.node_type == NodeType::Normal) {
+        let half_w = n.width / 2.0;
+        let half_h = n.height / 2.0;
+        if n.x - half_w < min_x { min_x = n.x - half_w; }
+        if n.x + half_w > max_x { max_x = n.x + half_w; }
+        if n.y - half_h < min_y { min_y = n.y - half_h; }
+        if n.y + half_h > max_y { max_y = n.y + half_h; }
+    }
+
+    let bounds = if min_x.is_finite() && max_x.is_finite() {
+        FfiRect {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+            width: (max_x - min_x).max(0.0),
+            height: (max_y - min_y).max(0.0),
+        }
+    } else {
+        FfiRect {
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 0.0,
+            max_y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        }
+    };
+
     let ffi_routes: Vec<FfiEdgeRoute> = routes
         .into_iter()
-        .map(|r| FfiEdgeRoute {
-            from: external_ids[r.source],
-            to: external_ids[r.target],
-            reversed: r.reversed,
-            waypoints: r
+        .map(|r| {
+            let pts: Vec<FfiPoint> = r
                 .waypoints
-                .into_iter()
-                .map(|(x, y)| FfiPoint { x, y })
-                .collect(),
+                .iter()
+                .map(|&(x, y)| FfiPoint { x, y })
+                .collect();
+
+            let mut segments = Vec::new();
+            match config.routing {
+                FfiRoutingStyle::Bezier => {
+                    if pts.len() >= 4 && (pts.len() - 1) % 3 == 0 {
+                        let num_segments = (pts.len() - 1) / 3;
+                        for s in 0..num_segments {
+                            segments.push(FfiPathSegment::CubicCurve {
+                                start: pts[3 * s],
+                                control1: pts[3 * s + 1],
+                                control2: pts[3 * s + 2],
+                                end: pts[3 * s + 3],
+                            });
+                        }
+                    } else if pts.len() == 2 {
+                        segments.push(FfiPathSegment::Line {
+                            start: pts[0],
+                            end: pts[1],
+                        });
+                    } else {
+                        for i in 0..pts.len().saturating_sub(1) {
+                            segments.push(FfiPathSegment::Line {
+                                start: pts[i],
+                                end: pts[i + 1],
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    for i in 0..pts.len().saturating_sub(1) {
+                        segments.push(FfiPathSegment::Line {
+                            start: pts[i],
+                            end: pts[i + 1],
+                        });
+                    }
+                }
+            }
+
+            FfiEdgeRoute {
+                from: external_ids[r.source],
+                to: external_ids[r.target],
+                reversed: r.reversed,
+                is_self_loop: r.is_self_loop,
+                waypoints: pts,
+                segments,
+            }
         })
         .collect();
 
@@ -254,5 +386,83 @@ fn run_pipeline(
         positions,
         routes: ffi_routes,
         self_loops,
+        bounds,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffi_layout_pipeline_produces_valid_result() {
+        let nodes = vec![
+            FfiNode { id: 100, width: 40.0, height: 20.0 },
+            FfiNode { id: 200, width: 40.0, height: 20.0 },
+            FfiNode { id: 300, width: 40.0, height: 20.0 },
+        ];
+        let edges = vec![
+            FfiEdge { from: 100, to: 200 },
+            FfiEdge { from: 200, to: 300 },
+            FfiEdge { from: 100, to: 100 }, // self loop
+        ];
+        let config = FfiConfig {
+            h_gap: 20.0,
+            v_gap: 40.0,
+            relax_passes: 4,
+            sweeps: 4,
+            algorithm: FfiAlgorithm::BrandesKopf,
+            routing: FfiRoutingStyle::Bezier,
+            direction: FfiDirection::TopToBottom,
+        };
+
+        let result = layout(nodes, edges, config).unwrap();
+        assert_eq!(result.positions.len(), 3);
+        assert_eq!(result.self_loops.len(), 1);
+        assert_eq!(result.self_loops[0].from, 100);
+
+        // Self-loop should be included in routes with is_self_loop = true
+        let self_loop_route = result.routes.iter().find(|r| r.is_self_loop);
+        assert!(self_loop_route.is_some());
+        assert_eq!(self_loop_route.unwrap().from, 100);
+        assert_eq!(self_loop_route.unwrap().to, 100);
+
+        // Bounds should be non-zero
+        assert!(result.bounds.width > 0.0);
+        assert!(result.bounds.height > 0.0);
+
+        // Segments should be generated for each route
+        for r in &result.routes {
+            assert!(!r.segments.is_empty());
+        }
+    }
+
+    #[test]
+    fn ffi_layout_left_to_right_direction() {
+        let nodes = vec![
+            FfiNode { id: 1, width: 50.0, height: 30.0 },
+            FfiNode { id: 2, width: 50.0, height: 30.0 },
+        ];
+        let edges = vec![
+            FfiEdge { from: 1, to: 2 },
+        ];
+        let config = FfiConfig {
+            h_gap: 20.0,
+            v_gap: 40.0,
+            relax_passes: 4,
+            sweeps: 4,
+            algorithm: FfiAlgorithm::MedianRelax,
+            routing: FfiRoutingStyle::Bezier,
+            direction: FfiDirection::LeftToRight,
+        };
+
+        let result = layout(nodes, edges, config).unwrap();
+        let pos1 = result.positions.iter().find(|p| p.id == 1).unwrap();
+        let pos2 = result.positions.iter().find(|p| p.id == 2).unwrap();
+
+        // In LeftToRight, node 1 is to the left of node 2 (x1 < x2)
+        assert!(pos1.x < pos2.x);
+    }
+}
+
+

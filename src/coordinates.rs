@@ -5,7 +5,7 @@
 //! - Weighted median relaxation (simpler, faster)
 //! - Brandes-Köpf alignment (produces more balanced layouts)
 
-use crate::types::{LayoutGraph, RankSystem, NodeId, EdgeChain, EdgeRoute, RoutingStyle, LayoutError};
+use crate::types::{LayoutGraph, RankSystem, NodeId, EdgeChain, EdgeRoute, RoutingStyle, LayoutError, LayoutDirection};
 
 /// Configuration for coordinate assignment algorithms.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -19,6 +19,8 @@ pub struct CoordConfig {
     pub relax_passes: usize,
     /// Which algorithm to use for x-coordinate assignment.
     pub algorithm: CoordAlgorithm,
+    /// Layout direction (TopToBottom or LeftToRight).
+    pub direction: LayoutDirection,
 }
 
 impl Default for CoordConfig {
@@ -28,13 +30,14 @@ impl Default for CoordConfig {
             v_gap: 40.0,
             relax_passes: 4,
             algorithm: CoordAlgorithm::default(),
+            direction: LayoutDirection::default(),
         }
     }
 }
 
 /// Algorithm selection for x-coordinate assignment.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CoordAlgorithm {
     /// Weighted median relaxation with compaction (simpler, O(N·passes))
     #[default]
@@ -46,81 +49,88 @@ pub enum CoordAlgorithm {
 /// Assigns coordinates to all nodes in the graph.
 ///
 /// # Algorithm
-/// 1. Y-coordinates: assigned by rank (trivial)
-/// 2. X-coordinates: based on CoordAlgorithm:
-///    - MedianRelax: weighted median relaxation with compaction
-///    - BrandesKopf: four-pass alignment averaging (top-left, top-right, bottom-left, bottom-right)
+/// 1. Primary axis (Y for TopToBottom, X for LeftToRight): assigned by rank
+/// 2. Secondary axis (X for TopToBottom, Y for LeftToRight): based on CoordAlgorithm
 /// 3. Centering: shift all coordinates so bounding box is centered at origin
 ///
 /// # Errors
 /// Returns `LayoutError::DanglingEdge` if an edge references a node id
 /// outside `graph.nodes`, or `LayoutError::MissingRank` if `assign_ranks`
 /// hasn't been run.
-///
-/// # Arguments
-/// * `graph` - The layout graph with ordered layers
-/// * `ranks` - The rank system defining layers
-/// * `config` - Configuration for spacing and algorithm selection
 pub fn assign_coordinates(graph: &mut LayoutGraph, ranks: &RankSystem, config: &CoordConfig) -> Result<(), LayoutError> {
     let layer_count = ranks.layers.len();
 
-    // Stage 1: Y-coordinate assignment (trivial)
-    // Compute max height per layer for proper vertical spacing
-    let mut layer_heights: Vec<f32> = vec![0.0; layer_count];
+    let is_lr = config.direction == LayoutDirection::LeftToRight;
+
+    // Stage 1: Inter-layer coordinate assignment
+    // Compute max extent per layer along the rank direction
+    let mut layer_extents: Vec<f32> = vec![0.0; layer_count];
     for (layer_idx, layer) in ranks.layers.iter().enumerate() {
         for &node_id in layer {
             if node_id < graph.nodes.len() {
-                let height = graph.nodes[node_id].height;
-                if height > layer_heights[layer_idx] {
-                    layer_heights[layer_idx] = height;
+                let extent = if is_lr { graph.nodes[node_id].width } else { graph.nodes[node_id].height };
+                if extent > layer_extents[layer_idx] {
+                    layer_extents[layer_idx] = extent;
                 }
             }
         }
     }
 
-    // Assign y coordinates (top-aligned within each layer)
-    let mut y_accum: f32 = 0.0;
+    // Assign layer coordinates (accumulated along primary axis)
+    let mut rank_coords: Vec<f32> = vec![0.0; graph.nodes.len()];
+    let mut rank_accum: f32 = 0.0;
     for (layer_idx, layer) in ranks.layers.iter().enumerate() {
         for &node_id in layer {
             if node_id < graph.nodes.len() {
-                graph.nodes[node_id].y = y_accum;
+                rank_coords[node_id] = rank_accum;
             }
         }
-        y_accum += layer_heights[layer_idx] + config.v_gap;
+        rank_accum += layer_extents[layer_idx] + config.v_gap;
     }
 
-    // Stage 2: X-coordinate assignment based on selected algorithm
-    let x_coords = match config.algorithm {
+    // Stage 2: Intra-layer coordinate assignment based on selected algorithm
+    let intra_coords = match config.algorithm {
         CoordAlgorithm::MedianRelax => {
-            median_relax_x_coords(graph, ranks, config.h_gap, config.relax_passes)?
+            median_relax_x_coords(graph, ranks, config.h_gap, config.relax_passes, is_lr)?
         }
         CoordAlgorithm::BrandesKopf => {
-            brandes_kopf_x_coords(graph, ranks, config.h_gap)?
+            brandes_kopf_x_coords(graph, ranks, config.h_gap, is_lr)?
         }
     };
 
-    // Stage 3: Center the layout
+    // Stage 3: Map canonical coordinates to X/Y and center the layout
+    for (i, node) in graph.nodes.iter_mut().enumerate() {
+        if is_lr {
+            node.x = rank_coords[i];
+            node.y = intra_coords[i];
+        } else {
+            node.x = intra_coords[i];
+            node.y = rank_coords[i];
+        }
+    }
+
     let mut min_x = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_y = f32::NEG_INFINITY;
 
-    for (i, node) in graph.nodes.iter().enumerate() {
-        let x = x_coords[i];
+    for node in graph.nodes.iter() {
         let half_w = node.width / 2.0;
-        if x - half_w < min_x { min_x = x - half_w; }
-        if x + half_w > max_x { max_x = x + half_w; }
-        if node.y < min_y { min_y = node.y; }
-        if node.y + node.height > max_y { max_y = node.y + node.height; }
+        let half_h = node.height / 2.0;
+        if node.x - half_w < min_x { min_x = node.x - half_w; }
+        if node.x + half_w > max_x { max_x = node.x + half_w; }
+        if node.y - half_h < min_y { min_y = node.y - half_h; }
+        if node.y + half_h > max_y { max_y = node.y + half_h; }
     }
 
-    let center_x = (min_x + max_x) / 2.0;
-    let center_y = (min_y + max_y) / 2.0;
+    if min_x.is_finite() && max_x.is_finite() {
+        let center_x = (min_x + max_x) / 2.0;
+        let center_y = (min_y + max_y) / 2.0;
 
-    // Apply centering and store final coordinates
-    for (i, node) in graph.nodes.iter_mut().enumerate() {
-        node.x = x_coords[i] - center_x;
-        node.y = node.y - center_y;
+        for node in graph.nodes.iter_mut() {
+            node.x -= center_x;
+            node.y -= center_y;
+        }
     }
 
     Ok(())
@@ -132,34 +142,34 @@ fn median_relax_x_coords(
     ranks: &RankSystem,
     h_gap: f32,
     relax_passes: usize,
+    is_lr: bool,
 ) -> Result<Vec<f32>, LayoutError> {
     let n = graph.nodes.len();
     let mut x_coords: Vec<f32> = vec![0.0; n];
-    let mut widths: Vec<f32> = vec![0.0; n];
+    let mut extents: Vec<f32> = vec![0.0; n];
 
     // Initial placement based on order
     for layer in &ranks.layers {
         if layer.is_empty() {
             continue;
         }
-        // Find max width in this layer for spacing
-        let mut max_width: f32 = 0.0;
+        let mut max_extent: f32 = 0.0;
         for &node_id in layer {
             if node_id < graph.nodes.len() {
-                let w = graph.nodes[node_id].width;
-                if w > max_width {
-                    max_width = w;
+                let extent = if is_lr { graph.nodes[node_id].height } else { graph.nodes[node_id].width };
+                if extent > max_extent {
+                    max_extent = extent;
                 }
-                widths[node_id] = graph.nodes[node_id].width;
+                extents[node_id] = extent;
             }
         }
 
-        // Initial x placement
+        // Initial intra-layer placement
         let mut x: f32 = 0.0;
         for &node_id in layer {
             if node_id < graph.nodes.len() {
                 x_coords[node_id] = x;
-                x += max_width + h_gap;
+                x += max_extent + h_gap;
             }
         }
     }
@@ -213,26 +223,25 @@ fn median_relax_x_coords(
             sorted.sort_by(|a, b| {
                 a.1.partial_cmp(&b.1)
                     .unwrap_or_else(|| {
-                        // Tie-break by current order
                         let ord_a = graph.nodes[a.0].order.unwrap_or(0);
                         let ord_b = graph.nodes[b.0].order.unwrap_or(0);
                         ord_a.cmp(&ord_b)
                     })
             });
 
-            // Compact: place nodes left-to-right respecting widths and gaps
+            // Compact: place nodes respecting widths/extents and gaps
             let mut x: f32 = 0.0;
-            let mut prev_width: f32 = 0.0;
+            let mut prev_extent: f32 = 0.0;
             for (i, &(node_id, _)) in sorted.iter().enumerate() {
                 if i == 0 {
                     x = preferred_x[node_id].unwrap_or(0.0);
                 } else {
-                    let min_x = x + prev_width / 2.0 + widths[node_id] / 2.0 + h_gap;
+                    let min_x = x + prev_extent / 2.0 + extents[node_id] / 2.0 + h_gap;
                     let pref = preferred_x[node_id].unwrap_or(x_coords[node_id]);
-                    x = pref.max(min_x - widths[node_id] / 2.0);
+                    x = pref.max(min_x - extents[node_id] / 2.0);
                 }
                 x_coords[node_id] = x;
-                prev_width = widths[node_id];
+                prev_extent = extents[node_id];
             }
         }
     }
@@ -240,28 +249,12 @@ fn median_relax_x_coords(
     Ok(x_coords)
 }
 
-/// X-coordinate assignment using a Brandes-Köpf-*inspired* heuristic.
-///
-/// Note: this is **not** the published Brandes-Köpf algorithm, which
-/// resolves type-1/type-2 conflicts between dummy-node chains and regular
-/// edges and aligns nodes within resulting blocks. What's implemented here
-/// is simpler: four directional weighted-average passes (top-down/
-/// bottom-up × left/right-aligned) that are then averaged together. It's a
-/// reasonable and much cheaper approximation, but unlike true BK it does
-/// not guarantee that dummy-node chains crossing other edges come out
-/// straight. Produces more balanced and symmetric layouts than plain
-/// median relaxation by computing four independent alignments and
-/// averaging them:
-/// 1. Top-left: process layers top-to-bottom, align left
-/// 2. Top-right: process layers top-to-bottom, align right
-/// 3. Bottom-left: process layers bottom-to-top, align left
-/// 4. Bottom-right: process layers bottom-to-top, align right
-///
-/// The final x-coordinate is the average of all four alignments.
+/// X-coordinate assignment using a Brandes-Köpf-inspired heuristic.
 fn brandes_kopf_x_coords(
     graph: &mut LayoutGraph,
     ranks: &RankSystem,
     h_gap: f32,
+    is_lr: bool,
 ) -> Result<Vec<f32>, LayoutError> {
     let n = graph.nodes.len();
 
@@ -291,16 +284,16 @@ fn brandes_kopf_x_coords(
     ];
 
     // Alignment 0: Top-Left (process top-to-bottom, align left)
-    compute_alignment(&mut x_coords[0], graph, ranks, &up_neighbors, true, true, h_gap);
+    compute_alignment(&mut x_coords[0], graph, ranks, &up_neighbors, true, true, h_gap, is_lr);
 
     // Alignment 1: Top-Right (process top-to-bottom, align right)
-    compute_alignment(&mut x_coords[1], graph, ranks, &up_neighbors, true, false, h_gap);
+    compute_alignment(&mut x_coords[1], graph, ranks, &up_neighbors, true, false, h_gap, is_lr);
 
     // Alignment 2: Bottom-Left (process bottom-to-top, align left)
-    compute_alignment(&mut x_coords[2], graph, ranks, &down_neighbors, false, true, h_gap);
+    compute_alignment(&mut x_coords[2], graph, ranks, &down_neighbors, false, true, h_gap, is_lr);
 
     // Alignment 3: Bottom-Right (process bottom-to-top, align right)
-    compute_alignment(&mut x_coords[3], graph, ranks, &down_neighbors, false, false, h_gap);
+    compute_alignment(&mut x_coords[3], graph, ranks, &down_neighbors, false, false, h_gap, is_lr);
 
     // Average the four alignments
     let mut avg_x: Vec<f32> = vec![0.0; n];
@@ -308,32 +301,13 @@ fn brandes_kopf_x_coords(
         avg_x[i] = (x_coords[0][i] + x_coords[1][i] + x_coords[2][i] + x_coords[3][i]) / 4.0;
     }
 
-    // Each of the four alignments individually respects h_gap spacing, but
-    // the average of four different valid layouts does not — most visibly
-    // on symmetric structures (e.g. a diamond), where sibling nodes with
-    // identical local structure average to the *same* x and end up
-    // overlapping. `repair_layer_spacing` fixes that: within each layer it
-    // finds the closest (least-squares) set of positions that preserves
-    // each node's already-fixed `order` and satisfies the minimum-gap
-    // constraint, via isotonic regression (pool-adjacent-violators). Unlike
-    // a naive "anchor the first node, push the rest right" compaction,
-    // PAVA distributes the correction across every violating node — so two
-    // overlapping siblings end up centered symmetrically around their
-    // shared mean, not with one anchored and the other shoved aside.
-    //
-    // Fixing sibling spacing alone can still leave a parent/child off
-    // center relative to its now-separated neighbors (e.g. a diamond's
-    // root should sit above the midpoint of its two children). So
-    // alternate a recentering step — pull each node toward the mean of
-    // *all* its neighbors, up and down together — with re-repairing
-    // spacing, letting both effects settle over a few passes.
     let mut combined_neighbors: Vec<Vec<NodeId>> = vec![Vec::new(); n];
     for id in 0..n {
         combined_neighbors[id].extend(&up_neighbors[id]);
         combined_neighbors[id].extend(&down_neighbors[id]);
     }
 
-    repair_layer_spacing(&mut avg_x, graph, ranks, h_gap);
+    repair_layer_spacing(&mut avg_x, graph, ranks, h_gap, is_lr);
     for _ in 0..8 {
         let mut preferred: Vec<f32> = avg_x.clone();
         for id in 0..n {
@@ -342,32 +316,16 @@ fn brandes_kopf_x_coords(
                 preferred[id] = sum / combined_neighbors[id].len() as f32;
             }
         }
-        // Damped update: a full replacement (avg_x = preferred) is a
-        // Jacobi-style simultaneous update, which can oscillate between two
-        // states indefinitely rather than converge (observed on the
-        // diamond test case above). Blending old and new breaks the cycle.
         for id in 0..n {
             avg_x[id] = 0.5 * avg_x[id] + 0.5 * preferred[id];
         }
-        repair_layer_spacing(&mut avg_x, graph, ranks, h_gap);
+        repair_layer_spacing(&mut avg_x, graph, ranks, h_gap, is_lr);
     }
 
     Ok(avg_x)
 }
 
-/// Within each layer, finds the closest set of positions (in a
-/// least-squares sense) to the given `x` values that preserves each node's
-/// already-fixed `order` and satisfies the minimum-gap constraint implied
-/// by `h_gap` and node widths.
-///
-/// Implemented via isotonic regression (pool-adjacent-violators, PAVA):
-/// subtracting each node's cumulative minimum offset from its position
-/// turns "positions respect minimum gaps, in order" into "positions are
-/// non-decreasing," which PAVA solves optimally in O(layer size). This is
-/// what makes the repair *symmetric* — when two equal-weight positions
-/// violate the ordering, PAVA pools them to their shared mean rather than
-/// anchoring one and pushing the other.
-fn repair_layer_spacing(x: &mut [f32], graph: &LayoutGraph, ranks: &RankSystem, h_gap: f32) {
+fn repair_layer_spacing(x: &mut [f32], graph: &LayoutGraph, ranks: &RankSystem, h_gap: f32, is_lr: bool) {
     for layer in &ranks.layers {
         if layer.len() <= 1 {
             continue;
@@ -379,15 +337,14 @@ fn repair_layer_spacing(x: &mut [f32], graph: &LayoutGraph, ranks: &RankSystem, 
             continue;
         }
 
-        // Cumulative minimum offset from the first node in the layer.
         let mut offsets: Vec<f32> = Vec::with_capacity(ordered.len());
         let mut cum = 0.0f32;
         for (i, &id) in ordered.iter().enumerate() {
+            let half = (if is_lr { graph.nodes[id].height } else { graph.nodes[id].width }) / 2.0;
             if i == 0 {
                 offsets.push(0.0);
             } else {
-                let prev_half = graph.nodes[ordered[i - 1]].width / 2.0;
-                let half = graph.nodes[id].width / 2.0;
+                let prev_half = (if is_lr { graph.nodes[ordered[i - 1]].height } else { graph.nodes[ordered[i - 1]].width }) / 2.0;
                 cum += prev_half + h_gap + half;
                 offsets.push(cum);
             }
@@ -403,11 +360,7 @@ fn repair_layer_spacing(x: &mut [f32], graph: &LayoutGraph, ranks: &RankSystem, 
     }
 }
 
-/// Finds the non-decreasing sequence closest to `values` in the
-/// least-squares sense, via the pool-adjacent-violators algorithm (PAVA).
-/// O(n) amortized.
 fn isotonic_regression(values: &[f32]) -> Vec<f32> {
-    // Each entry in the stack is a pooled block: (mean, count).
     let mut blocks: Vec<(f32, usize)> = Vec::new();
     for &v in values {
         let mut mean = v;
@@ -434,15 +387,6 @@ fn isotonic_regression(values: &[f32]) -> Vec<f32> {
     result
 }
 
-/// Computes a single Brandes-Köpf alignment pass.
-///
-/// # Arguments
-/// * `x_out` - Output vector to store x-coordinates
-/// * `graph` - The layout graph
-/// * `ranks` - The rank system
-/// * `neighbors` - Neighbor list (up or down depending on direction)
-/// * `top_down` - If true, process layers top-to-bottom; else bottom-to-top
-/// * `align_left` - If true, align to left; else align to right
 fn compute_alignment(
     x_out: &mut [f32],
     graph: &LayoutGraph,
@@ -451,6 +395,7 @@ fn compute_alignment(
     top_down: bool,
     align_left: bool,
     h_gap: f32,
+    is_lr: bool,
 ) {
     let layer_indices: Vec<usize> = if top_down {
         (0..ranks.layers.len()).collect()
@@ -458,14 +403,12 @@ fn compute_alignment(
         (0..ranks.layers.len()).rev().collect()
     };
 
-    // Process each layer in order
     for &layer_idx in &layer_indices {
         let layer = &ranks.layers[layer_idx];
         if layer.is_empty() {
             continue;
         }
 
-        // Compute preferred x for each node (median/average of neighbors already placed)
         let mut preferred_x: Vec<f32> = vec![0.0; graph.nodes.len()];
         let mut has_preferred: Vec<bool> = vec![false; graph.nodes.len()];
 
@@ -490,103 +433,170 @@ fn compute_alignment(
             }
         }
 
-        // Sort nodes by preferred x (or by order if no preferred x)
-        let mut sorted: Vec<(NodeId, f32)> = layer.iter()
-            .map(|&id| {
-                let px = if has_preferred[id] { preferred_x[id] } else { x_out[id] };
-                (id, px)
-            })
-            .collect();
+        let mut ordered_nodes: Vec<NodeId> = layer.clone();
+        ordered_nodes.sort_by_key(|&id| graph.nodes[id].order.unwrap_or(0));
 
-        // Stable sort by preferred x, tie-break by current order
-        sorted.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or_else(|| {
-                    let ord_a = graph.nodes[a.0].order.unwrap_or(0);
-                    let ord_b = graph.nodes[b.0].order.unwrap_or(0);
-                    ord_a.cmp(&ord_b)
-                })
-        });
-
-        if !align_left {
-            // Reverse for right alignment
-            sorted.reverse();
-        }
-
-        // Place nodes with compaction
-        let mut x: f32;
-        let mut prev_right: f32 = 0.0;
-
-        for (i, &(node_id, _)) in sorted.iter().enumerate() {
-            if node_id >= graph.nodes.len() {
-                continue;
-            }
-            let node = &graph.nodes[node_id];
-            let half_w = node.width / 2.0;
-
-            if i == 0 {
-                if align_left {
-                    x = if has_preferred[node_id] { preferred_x[node_id] - half_w } else { 0.0 };
-                } else {
-                    x = if has_preferred[node_id] { preferred_x[node_id] + half_w } else { 0.0 };
+        if align_left {
+            let mut prev_right: f32 = 0.0;
+            for (i, &node_id) in ordered_nodes.iter().enumerate() {
+                if node_id >= graph.nodes.len() {
+                    continue;
                 }
-            } else {
-                let min_x = prev_right + h_gap;
-                let target_x = if has_preferred[node_id] {
-                    if align_left {
+                let node = &graph.nodes[node_id];
+                let extent = if is_lr { node.height } else { node.width };
+                let half_w = extent / 2.0;
+
+                let x = if i == 0 {
+                    if has_preferred[node_id] {
                         preferred_x[node_id] - half_w
                     } else {
-                        preferred_x[node_id] + half_w
+                        0.0
                     }
                 } else {
-                    min_x
+                    let min_x = prev_right + h_gap;
+                    if has_preferred[node_id] {
+                        (preferred_x[node_id] - half_w).max(min_x)
+                    } else {
+                        min_x
+                    }
                 };
-                x = target_x.max(min_x);
-            }
 
-            x_out[node_id] = x + half_w; // Store center x
-            prev_right = x + node.width;
+                x_out[node_id] = x + half_w;
+                prev_right = x + extent;
+            }
+        } else {
+            let mut prev_left: f32 = 0.0;
+            for (i, &node_id) in ordered_nodes.iter().rev().enumerate() {
+                if node_id >= graph.nodes.len() {
+                    continue;
+                }
+                let node = &graph.nodes[node_id];
+                let extent = if is_lr { node.height } else { node.width };
+                let half_w = extent / 2.0;
+
+                let x = if i == 0 {
+                    if has_preferred[node_id] {
+                        preferred_x[node_id] - half_w
+                    } else {
+                        0.0
+                    }
+                } else {
+                    let max_x = prev_left - h_gap - extent;
+                    if has_preferred[node_id] {
+                        (preferred_x[node_id] - half_w).min(max_x)
+                    } else {
+                        max_x
+                    }
+                };
+
+                x_out[node_id] = x + half_w;
+                prev_left = x;
+            }
         }
     }
 }
 
 /// Routes edges through the graph based on node positions and edge chains.
-///
-/// # Arguments
-/// * `graph` - The layout graph with assigned coordinates
-/// * `chains` - Edge chains from phase 2a
-/// * `style` - The routing style (Straight, Orthogonal, or Bezier)
-///
-/// # Errors
-/// Returns `LayoutError::DanglingEdge` if a chain references a node id
-/// outside `graph.nodes`.
-///
-/// # Returns
-/// A vector of `EdgeRoute` structures with waypoints for each edge.
 pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyle) -> Result<Vec<EdgeRoute>, LayoutError> {
+    use std::collections::HashMap;
+
     let mut routes = Vec::new();
 
+    // Track edge multiplicity between node pairs to apply curvature offsets
+    let mut pair_counts: HashMap<(NodeId, NodeId), usize> = HashMap::new();
+    let mut pair_seen: HashMap<(NodeId, NodeId), usize> = HashMap::new();
+
     for chain in chains {
+        let p = (chain.source.min(chain.target), chain.source.max(chain.target));
+        *pair_counts.entry(p).or_insert(0) += 1;
+    }
+
+    for chain in chains {
+        let p = (chain.source.min(chain.target), chain.source.max(chain.target));
+        let count = *pair_counts.get(&p).unwrap_or(&1);
+        let idx = *pair_seen.entry(p).or_insert(0);
+        pair_seen.insert(p, idx + 1);
+
+        let offset = if count > 1 {
+            (idx as f32 - (count - 1) as f32 / 2.0) * 20.0
+        } else {
+            0.0
+        };
+
+        if chain.is_self_loop || chain.source == chain.target {
+            let node = graph.nodes.get(chain.source)
+                .ok_or(LayoutError::DanglingEdge { from: chain.source, to: chain.target })?;
+            let cx = node.x;
+            let cy = node.y;
+            let w = node.width.max(16.0);
+            let h = node.height.max(16.0);
+            let r_offset = offset.abs() * 0.6;
+
+            let p0 = (cx + w * 0.2, cy - h / 2.0);
+            let c1 = (cx + w * 0.6 + 15.0 + r_offset, cy - h / 2.0 - 25.0 - r_offset);
+            let c2 = (cx - w * 0.6 - 15.0 - r_offset, cy - h / 2.0 - 25.0 - r_offset);
+            let p1 = (cx - w * 0.2, cy - h / 2.0);
+
+            let loop_waypoints = match style {
+                RoutingStyle::Straight => vec![p0, ((p0.0 + p1.0) / 2.0, cy - h / 2.0 - 20.0 - r_offset), p1],
+                RoutingStyle::Orthogonal => vec![
+                    p0,
+                    (p0.0, cy - h / 2.0 - 15.0 - r_offset),
+                    (p1.0, cy - h / 2.0 - 15.0 - r_offset),
+                    p1,
+                ],
+                RoutingStyle::Bezier => vec![p0, c1, c2, p1],
+            };
+
+            routes.push(EdgeRoute {
+                source: chain.source,
+                target: chain.target,
+                reversed: chain.reversed,
+                is_self_loop: true,
+                waypoints: loop_waypoints,
+            });
+            continue;
+        }
+
         // Extract waypoint coordinates from the chain
         let mut waypoints: Vec<(f32, f32)> = Vec::new();
+
+        let source_node = graph.nodes.get(chain.source)
+            .ok_or(LayoutError::DanglingEdge { from: chain.source, to: chain.target })?;
+        let target_node = graph.nodes.get(chain.target)
+            .ok_or(LayoutError::DanglingEdge { from: chain.source, to: chain.target })?;
+
+        let dx_total = target_node.x - source_node.x;
+        let dy_total = target_node.y - source_node.y;
+        let is_primarily_vertical = dy_total.abs() >= dx_total.abs();
 
         for (i, &node_id) in chain.chain.iter().enumerate() {
             let node = graph.nodes.get(node_id)
                 .ok_or(LayoutError::DanglingEdge { from: chain.source, to: chain.target })?;
-            let cx = node.x; // center x
+            let cx = node.x;
+            let cy = node.y;
 
             if i == 0 {
-                // Source: exit from the bottom edge, half the node's
-                // height below its center.
-                waypoints.push((cx, node.y + node.height / 2.0));
+                // Source attachment
+                if is_primarily_vertical {
+                    let y_att = if dy_total >= 0.0 { cy + node.height / 2.0 } else { cy - node.height / 2.0 };
+                    waypoints.push((cx, y_att));
+                } else {
+                    let x_att = if dx_total >= 0.0 { cx + node.width / 2.0 } else { cx - node.width / 2.0 };
+                    waypoints.push((x_att, cy));
+                }
             } else if i == chain.chain.len() - 1 {
-                // Target: enter at the top edge, half the node's height
-                // above its center.
-                waypoints.push((cx, node.y - node.height / 2.0));
+                // Target attachment
+                if is_primarily_vertical {
+                    let y_att = if dy_total >= 0.0 { cy - node.height / 2.0 } else { cy + node.height / 2.0 };
+                    waypoints.push((cx, y_att));
+                } else {
+                    let x_att = if dx_total >= 0.0 { cx - node.width / 2.0 } else { cx + node.width / 2.0 };
+                    waypoints.push((x_att, cy));
+                }
             } else {
-                // Dummy node: these always have zero width/height, so
-                // their "edge" and "center" are the same point.
-                waypoints.push((cx, node.y));
+                // Dummy node
+                waypoints.push((cx, cy));
             }
         }
 
@@ -596,62 +606,86 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
 
         let route = match style {
             RoutingStyle::Straight => {
-                // Only first and last points
                 let first = *waypoints.first().unwrap();
                 let last = *waypoints.last().unwrap();
+                let straight_points = if offset.abs() > 0.001 {
+                    let mid_x = (first.0 + last.0) / 2.0;
+                    let mid_y = (first.1 + last.1) / 2.0;
+                    let dx = last.0 - first.0;
+                    let dy = last.1 - first.1;
+                    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                    let nx = -dy / len;
+                    let ny = dx / len;
+                    vec![first, (mid_x + nx * offset, mid_y + ny * offset), last]
+                } else {
+                    vec![first, last]
+                };
+
                 EdgeRoute {
                     source: chain.source,
                     target: chain.target,
                     reversed: chain.reversed,
-                    waypoints: vec![first, last],
+                    is_self_loop: false,
+                    waypoints: straight_points,
                 }
             }
             RoutingStyle::Orthogonal => {
-                // L-bends at midpoints between ranks
                 let mut ortho_points: Vec<(f32, f32)> = Vec::new();
+                ortho_points.push(waypoints[0]);
                 for i in 0..waypoints.len() - 1 {
                     let (x1, y1) = waypoints[i];
                     let (x2, y2) = waypoints[i + 1];
-                    let mid_y = (y1 + y2) / 2.0;
+                    let mid_y = (y1 + y2) / 2.0 + offset * 0.3;
                     ortho_points.push((x1, mid_y));
                     ortho_points.push((x2, mid_y));
                 }
-                // Add final point
                 ortho_points.push(*waypoints.last().unwrap());
 
                 EdgeRoute {
                     source: chain.source,
                     target: chain.target,
                     reversed: chain.reversed,
+                    is_self_loop: false,
                     waypoints: ortho_points,
                 }
             }
             RoutingStyle::Bezier => {
-                // Catmull-Rom to cubic Bezier conversion
                 let mut bezier_points: Vec<(f32, f32)> = Vec::new();
 
                 if waypoints.len() == 2 {
-                    // Simple case: just start and end
-                    bezier_points = waypoints.clone();
+                    let p0 = waypoints[0];
+                    let p1 = waypoints[1];
+                    let dx = p1.0 - p0.0;
+                    let dy = p1.1 - p0.1;
+                    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                    let nx = -dy / len;
+                    let ny = dx / len;
+
+                    let (c1, c2) = if is_primarily_vertical {
+                        (
+                            (p0.0 + nx * offset, p0.1 + dy * 0.5 + ny * offset),
+                            (p1.0 + nx * offset, p1.1 - dy * 0.5 + ny * offset),
+                        )
+                    } else {
+                        (
+                            (p0.0 + dx * 0.5 + nx * offset, p0.1 + ny * offset),
+                            (p1.0 - dx * 0.5 + nx * offset, p1.1 + ny * offset),
+                        )
+                    };
+
+                    bezier_points = vec![p0, c1, c2, p1];
                 } else {
-                    // For each segment, compute cubic Bezier control points
                     for i in 0..waypoints.len() - 1 {
                         let p0 = waypoints[i];
                         let p1 = waypoints[i + 1];
 
-                        // Get previous and next points for tangent calculation
                         let p_prev = if i > 0 { waypoints[i - 1] } else {
-                            // Extrapolate: p0 - (p1 - p0) = 2*p0 - p1
                             (2.0 * p0.0 - p1.0, 2.0 * p0.1 - p1.1)
                         };
                         let p_next = if i + 2 < waypoints.len() { waypoints[i + 2] } else {
-                            // Extrapolate: p1 + (p1 - p0) = 2*p1 - p0
                             (2.0 * p1.0 - p0.0, 2.0 * p1.1 - p0.1)
                         };
 
-                        // Catmull-Rom to Bezier conversion
-                        // C1 = P0 + (P_next - P_prev) / 6
-                        // C2 = P1 - (P_next2 - P0) / 6 ... simplified for single segment
                         let tension = 1.0 / 6.0;
                         let c1 = (
                             p0.0 + (p_next.0 - p_prev.0) * tension,
@@ -675,6 +709,7 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
                     source: chain.source,
                     target: chain.target,
                     reversed: chain.reversed,
+                    is_self_loop: false,
                     waypoints: bezier_points,
                 }
             }
@@ -849,6 +884,7 @@ mod tests {
             source: 0,
             target: 1,
             reversed: false,
+            is_self_loop: false,
             chain: vec![0, 1],
         }];
 
@@ -859,13 +895,6 @@ mod tests {
 
     #[test]
     fn route_edges_waypoints_attach_at_node_edges_not_center() {
-        // Regression test: `node.x`/`node.y` are each node's CENTER
-        // (the convention `assign_coordinates` establishes), not a
-        // top-left-style bounding-box corner. Earlier code assumed the
-        // latter, which overshot the source node's actual bottom edge
-        // by a full node-height while landing exactly on the target
-        // node's center with no offset — an asymmetric bug invisible in
-        // tests that only checked waypoint *counts*, never values.
         let mut source = node(0);
         source.x = 0.0;
         source.y = -128.0;
@@ -884,6 +913,7 @@ mod tests {
             source: 0,
             target: 1,
             reversed: false,
+            is_self_loop: false,
             chain: vec![0, 1],
         }];
 
@@ -899,9 +929,6 @@ mod tests {
 
     #[test]
     fn route_edges_dummy_node_waypoint_uses_its_own_center() {
-        // Dummy nodes always have zero width/height, so their "edge" and
-        // "center" coincide -- this pins that down explicitly rather than
-        // relying on it being incidentally true.
         let mut source = node(0);
         source.y = -100.0;
         source.height = 40.0;
@@ -924,19 +951,18 @@ mod tests {
             source: 0,
             target: 2,
             reversed: false,
+            is_self_loop: false,
             chain: vec![0, 1, 2],
         }];
 
         let routes = route_edges(&graph, &chains, RoutingStyle::Straight).unwrap();
-        // Straight routing only keeps first/last, so use Orthogonal here
-        // to exercise the dummy node's own waypoint too: orthogonal
-        // routing turns [source_edge=(0,-80), dummy_center=(0,0),
-        // target_edge=(0,80)] into midpoint-based L-bends, so its first
-        // point is the midpoint of the first two raw waypoints.
         let routes_ortho = route_edges(&graph, &chains, RoutingStyle::Orthogonal).unwrap();
         assert_eq!(routes.len(), 1);
         assert_eq!(routes_ortho.len(), 1);
-        assert_eq!(routes_ortho[0].waypoints.first().unwrap().1, -40.0);
+        // Orthogonal routing starts at source node attachment edge (-80.0)
+        assert_eq!(routes_ortho[0].waypoints.first().unwrap().1, -80.0);
+        // Second point is the L-bend midpoint
+        assert_eq!(routes_ortho[0].waypoints[1].1, -40.0);
     }
 
     #[test]
@@ -945,33 +971,94 @@ mod tests {
             nodes: vec![node(0), node(1), node(2)],
             edges: vec![],
         };
-        // Chain with one dummy node: source, dummy, target
         let chains = vec![EdgeChain {
             source: 0,
             target: 2,
             reversed: false,
+            is_self_loop: false,
             chain: vec![0, 1, 2],
         }];
 
         let routes = route_edges(&graph, &chains, RoutingStyle::Bezier).unwrap();
         assert_eq!(routes.len(), 1);
-        // Bezier with 3 waypoints produces 4 points per segment × 2 segments = more than 4
-        // Actually for 3 waypoints we get 2 segments, each with 4 points but shared
-        // So: P0, C1, C2, P1, C1', C2', P2 = 7 points? Let's check implementation
-        // Our impl adds P0 once, then for each segment: C1, C2, P1
-        // Segment 0: C1, C2, P1 (3 points after P0)
-        // Segment 1: C1, C2, P1 (3 more points)
-        // Total: 1 + 3 + 3 = 7 points
         assert!(routes[0].waypoints.len() >= 4, "Bezier should produce at least 4 waypoints");
     }
 
     #[test]
+    fn route_edges_self_loops_generate_valid_loop_routes() {
+        let graph = LayoutGraph {
+            nodes: vec![node(0)],
+            edges: vec![],
+        };
+        let chains = vec![EdgeChain {
+            source: 0,
+            target: 0,
+            reversed: false,
+            is_self_loop: true,
+            chain: vec![0],
+        }];
+
+        let routes = route_edges(&graph, &chains, RoutingStyle::Bezier).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert!(routes[0].is_self_loop);
+        assert_eq!(routes[0].waypoints.len(), 4, "Self loop Bezier should have 4 points (P0, C1, C2, P1)");
+    }
+
+    #[test]
+    fn route_edges_multi_edges_have_distinct_waypoints() {
+        let graph = LayoutGraph {
+            nodes: vec![node(0), node(1)],
+            edges: vec![],
+        };
+        let chains = vec![
+            EdgeChain {
+                source: 0,
+                target: 1,
+                reversed: false,
+                is_self_loop: false,
+                chain: vec![0, 1],
+            },
+            EdgeChain {
+                source: 0,
+                target: 1,
+                reversed: false,
+                is_self_loop: false,
+                chain: vec![0, 1],
+            },
+        ];
+
+        let routes = route_edges(&graph, &chains, RoutingStyle::Bezier).unwrap();
+        assert_eq!(routes.len(), 2);
+        // Multi-edges should not have identical control points
+        assert_ne!(routes[0].waypoints[1], routes[1].waypoints[1]);
+    }
+
+    #[test]
+    fn left_to_right_layout_coordinates() {
+        let mut graph = LayoutGraph {
+            nodes: vec![node(0), node(1)],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+        };
+        let ranks = RankSystem {
+            layers: vec![vec![0], vec![1]],
+        };
+        graph.nodes[0].rank = Some(0);
+        graph.nodes[1].rank = Some(1);
+        graph.nodes[0].order = Some(0);
+        graph.nodes[1].order = Some(0);
+
+        let config = CoordConfig {
+            direction: LayoutDirection::LeftToRight,
+            ..Default::default()
+        };
+        assign_coordinates(&mut graph, &ranks, &config).unwrap();
+
+        // In LeftToRight, rank 0 is to the left of rank 1 (x0 < x1)
+        assert!(graph.nodes[0].x < graph.nodes[1].x);
+    }
+
+    #[test]
     fn brandes_kopf_no_sibling_overlap() {
-        // Regression test: averaging four independently-compacted BK
-        // alignments can collapse siblings that share identical local
-        // structure onto the exact same x-coordinate. On this diamond,
-        // nodes 1 and 2 both connect only to node 0 above and node 3
-        // below, which used to make them average to the same x.
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3)],
             edges: vec![
@@ -1007,7 +1094,6 @@ mod tests {
             "siblings must be at least h_gap apart, got gap={gap}, required={min_required}"
         );
 
-        // And it should still be symmetric, as the earlier test checks.
         let mid_0_3 = (graph.nodes[0].x + graph.nodes[3].x) / 2.0;
         let mid_1_2 = (graph.nodes[1].x + graph.nodes[2].x) / 2.0;
         assert!((mid_0_3 - mid_1_2).abs() < 0.01, "diamond should be exactly symmetric");

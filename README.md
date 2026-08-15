@@ -149,23 +149,30 @@ graph earlier, before you've done any other work.
 
 ### CoordConfig
 
-| Field          | Type             | Default       | Description                                           |
-| -------------- | ---------------- | ------------- | ----------------------------------------------------- |
-| `h_gap`        | `f32`            | 20.0          | Minimum horizontal gap between adjacent nodes         |
-| `v_gap`        | `f32`            | 40.0          | Vertical gap between rank layers                      |
-| `relax_passes` | `usize`          | 4             | Number of median-relaxation passes (MedianRelax only) |
-| `algorithm`    | `CoordAlgorithm` | `MedianRelax` | X-coordinate assignment algorithm                     |
+| Field          | Type              | Default        | Description                                           |
+| -------------- | ----------------- | -------------- | ----------------------------------------------------- |
+| `h_gap`        | `f32`             | 20.0           | Minimum horizontal gap between adjacent nodes         |
+| `v_gap`        | `f32`             | 40.0           | Vertical gap between rank layers                      |
+| `relax_passes` | `usize`           | 4              | Number of median-relaxation passes (MedianRelax only) |
+| `algorithm`    | `CoordAlgorithm`  | `MedianRelax`  | Coordinate assignment algorithm                       |
+| `direction`    | `LayoutDirection` | `TopToBottom`  | Layout direction (`TopToBottom` or `LeftToRight`)     |
 
 ### CoordAlgorithm
 
 - `MedianRelax` - Weighted median relaxation (faster, simpler)
 - `BrandesKopf` - Four-pass alignment averaging (better quality)
 
+### LayoutDirection
+
+- `TopToBottom` - Standard vertical tree/DAG layout (ranks along Y, layers along X)
+- `LeftToRight` - Horizontal flow layout (ranks along X, layers along Y)
+
 ### RoutingStyle
 
-- `Straight` - Direct lines
-- `Orthogonal` - Right-angle bends
-- `Bezier` - Smooth curves
+- `Straight` - Direct lines with parallel edge displacement
+- `Orthogonal` - Right-angle bends with connected start and end attachments
+- `Bezier` - Smooth cubic Bézier curves (valid 4-point quadruples `(P0, C1, C2, P1)` for single-rank, self-loops, and multi-rank segments)
+
 
 ## Module Structure
 

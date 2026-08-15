@@ -35,12 +35,31 @@ pub fn insert_dummy_nodes(
         let rank_to = to_node.rank.ok_or(LayoutError::MissingRank(edge.to))?;
         let span = rank_to as isize - rank_from as isize;
 
-        if span == 1 {
+        // Original endpoints before cycle breaking
+        let orig_source = if edge.reversed { edge.to } else { edge.from };
+        let orig_target = if edge.reversed { edge.from } else { edge.to };
+        let is_self_loop = edge.from == edge.to;
+
+        if is_self_loop {
+            chains.push(EdgeChain {
+                source: orig_source,
+                target: orig_target,
+                reversed: false,
+                is_self_loop: true,
+                chain: vec![edge.from],
+            });
+            new_edges.push(LayoutEdge {
+                from: edge.from,
+                to: edge.to,
+                reversed: false,
+            });
+        } else if span == 1 {
             // Short edge - no dummies needed
             chains.push(EdgeChain {
-                source: edge.from,
-                target: edge.to,
+                source: orig_source,
+                target: orig_target,
                 reversed: edge.reversed,
+                is_self_loop: false,
                 chain: vec![edge.from, edge.to],
             });
             new_edges.push(LayoutEdge {
@@ -96,18 +115,19 @@ pub fn insert_dummy_nodes(
             chain.push(edge.to);
 
             chains.push(EdgeChain {
-                source: edge.from,
-                target: edge.to,
+                source: orig_source,
+                target: orig_target,
                 reversed: edge.reversed,
+                is_self_loop: false,
                 chain,
             });
         } else {
-            // Edge going backwards or same rank - should not happen after cycle breaking
-            // but handle gracefully by treating as short edge
+            // Edge going backwards or same rank
             chains.push(EdgeChain {
-                source: edge.from,
-                target: edge.to,
+                source: orig_source,
+                target: orig_target,
                 reversed: edge.reversed,
+                is_self_loop: false,
                 chain: vec![edge.from, edge.to],
             });
             new_edges.push(LayoutEdge {

@@ -141,6 +141,27 @@ impl std::fmt::Display for LayoutError {
 
 impl std::error::Error for LayoutError {}
 
+/// Layout direction.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayoutDirection {
+    #[default]
+    TopToBottom,
+    LeftToRight,
+}
+
+/// Bounding rectangle for a layout.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LayoutRect {
+    pub min_x: f32,
+    pub min_y: f32,
+    pub max_x: f32,
+    pub max_y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 /// Tracks how a single original (possibly long) edge was decomposed into a
 /// chain of single-rank segments by Rank Assignment.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -149,16 +170,18 @@ pub struct EdgeChain {
     pub source: NodeId,   // original edge source
     pub target: NodeId,   // original edge target
     pub reversed: bool,   // mirrored from the LayoutEdge
+    pub is_self_loop: bool,
     /// All waypoint nodes in order: [source, dummy₁, dummy₂, …, target].
     pub chain: Vec<NodeId>,
 }
 
 /// Routing style for edge drawing.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RoutingStyle {
     Straight,     // straight line, 2 points only
     Orthogonal,   // right-angle polyline through dummy midpoints
+    #[default]
     Bezier,       // smooth cubic bezier through dummy waypoints
 }
 
@@ -169,11 +192,12 @@ pub struct EdgeRoute {
     pub source: NodeId,
     pub target: NodeId,
     pub reversed: bool,
+    pub is_self_loop: bool,
     /// Waypoints from source to target.
-    /// - Straight:    exactly 2 points (source center, target center).
-    /// - Orthogonal:  polyline through dummy-node midpoints (≥ 2 points).
-    /// - Bezier:      cubic bezier quadruples packed as (P0, C1, C2, P1, …)
-    ///                starting at source center and ending at target center.
+    /// - Straight:    exactly 2 points (source attachment, target attachment).
+    /// - Orthogonal:  polyline starting at source attachment and ending at target attachment (>= 2 points).
+    /// - Bezier:      cubic bezier quadruples packed as (P0, C1, C2, P1, C1', C2', P2, …)
+    ///                starting at source attachment and ending at target attachment.
     pub waypoints: Vec<(f32, f32)>,
 }
 
@@ -184,7 +208,8 @@ pub struct EdgeRoute {
 /// the median relaxation and Brandes-Köpf algorithms.
 #[deprecated(since = "2.0.0", note = "Use CoordConfig instead, which supports Brandes-Köpf algorithm")]
 pub type CoordinateConfig = crate::coordinates::CoordConfig;
-/// Re-export CoordConfig from coordinatesfor direct access.
+/// Re-export CoordConfig from coordinates for direct access.
 pub use crate::coordinates::{CoordConfig, CoordAlgorithm};
 // Re-export LayoutPipeline for backward compatibility
 pub use crate::ranks::LayoutPipeline;
+

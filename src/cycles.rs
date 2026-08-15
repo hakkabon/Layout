@@ -9,55 +9,58 @@ use crate::types::LayoutGraph;
 /// Breaks cycles in the graph by reversing back-edges detected via DFS.
 /// Returns the indices of edges that were reversed.
 ///
-/// Uses an iterative (stack-based) DFS to avoid stack overflow on deep graphs.
+/// Uses an iterative 3-color DFS to avoid stack overflow and correctly
+/// identify back-edges without duplicate expansions.
 ///
 /// # Complexity
 /// O(N + E) where N is the number of nodes and E is the number of edges.
 pub fn break_cycles(graph: &mut LayoutGraph) -> Vec<usize> {
     let n = graph.nodes.len();
-    let mut visited = vec![false; n];
-    let mut on_stack = vec![false; n];
+    if n == 0 {
+        return Vec::new();
+    }
+
+    // 0 = White (unvisited), 1 = Gray (on stack / visiting), 2 = Black (visited)
+    let mut color = vec![0u8; n];
     let mut reversed_indices = Vec::new();
 
-    // Build adjacency list for efficient traversal
-    let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n]; // (neighbor, edge_index)
+    // Build adjacency list: node -> Vec<(neighbor, edge_index)>
+    let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
     for (idx, edge) in graph.edges.iter().enumerate() {
-        adj[edge.from].push((edge.to, idx));
+        if edge.from < n && edge.to < n {
+            adj[edge.from].push((edge.to, idx));
+        }
     }
 
     for start in 0..n {
-        if visited[start] {
+        if color[start] != 0 {
             continue;
         }
 
-        // Iterative DFS using explicit stack
-        // Stack entries: (node_id, edge_iterator_index, entering)
-        let mut stack: Vec<(usize, usize, bool)> = Vec::new();
-        stack.push((start, 0, true));
+        // Stack contains (node, next_edge_index)
+        let mut stack: Vec<(usize, usize)> = Vec::new();
+        color[start] = 1;
+        stack.push((start, 0));
 
-        while let Some((node, _edge_idx, entering)) = stack.pop() {
-            if entering {
-                if visited[node] && !on_stack[node] {
-                    continue;
-                }
-                visited[node] = true;
-                on_stack[node] = true;
-                // Push exit marker
-                stack.push((node, 0, false));
-                // Push all children
-                for &(neighbor, e_idx) in &adj[node] {
-                    if !visited[neighbor] {
-                        stack.push((neighbor, 0, true));
-                    } else if on_stack[neighbor] {
-                        // Back-edge detected - reverse it
-                        let edge = &mut graph.edges[e_idx];
-                        std::mem::swap(&mut edge.from, &mut edge.to);
-                        edge.reversed = true;
-                        reversed_indices.push(e_idx);
-                    }
+        while let Some((node, edge_idx)) = stack.last_mut() {
+            let u = *node;
+            if *edge_idx < adj[u].len() {
+                let (v, e_idx) = adj[u][*edge_idx];
+                *edge_idx += 1;
+
+                if color[v] == 0 {
+                    color[v] = 1;
+                    stack.push((v, 0));
+                } else if color[v] == 1 {
+                    // Back-edge detected - reverse it
+                    let edge = &mut graph.edges[e_idx];
+                    std::mem::swap(&mut edge.from, &mut edge.to);
+                    edge.reversed = true;
+                    reversed_indices.push(e_idx);
                 }
             } else {
-                on_stack[node] = false;
+                color[u] = 2;
+                stack.pop();
             }
         }
     }

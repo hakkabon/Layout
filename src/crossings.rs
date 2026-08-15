@@ -43,12 +43,13 @@ pub fn order_layers(graph: &mut LayoutGraph, ranks: &mut RankSystem, sweeps: usi
             .ok_or(LayoutError::DanglingEdge { from: edge.from, to: edge.to })?;
         let rank_from = from_node.rank.ok_or(LayoutError::MissingRank(edge.from))? as isize;
         let rank_to = to_node.rank.ok_or(LayoutError::MissingRank(edge.to))? as isize;
-        debug_assert!(
-            (rank_to - rank_from).abs() == 1,
-            "requires single-rank edges; run Dummy Node Insertion first"
-        );
-        down_neighbors[edge.from].push(edge.to);
-        up_neighbors[edge.to].push(edge.from);
+        if rank_to - rank_from == 1 {
+            down_neighbors[edge.from].push(edge.to);
+            up_neighbors[edge.to].push(edge.from);
+        } else if rank_from - rank_to == 1 {
+            down_neighbors[edge.to].push(edge.from);
+            up_neighbors[edge.from].push(edge.to);
+        }
     }
 
     let layer_count = ranks.layers.len();
