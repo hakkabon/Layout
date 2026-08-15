@@ -574,19 +574,19 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
             let node = graph.nodes.get(node_id)
                 .ok_or(LayoutError::DanglingEdge { from: chain.source, to: chain.target })?;
             let cx = node.x; // center x
-            let cy = node.y + node.height; // bottom of node
 
             if i == 0 {
-                // Source: use bottom center
-                waypoints.push((cx, cy));
+                // Source: exit from the bottom edge, half the node's
+                // height below its center.
+                waypoints.push((cx, node.y + node.height / 2.0));
             } else if i == chain.chain.len() - 1 {
-                // Target: use top center
-                let ty = node.y; // top of target
-                waypoints.push((cx, ty));
+                // Target: enter at the top edge, half the node's height
+                // above its center.
+                waypoints.push((cx, node.y - node.height / 2.0));
             } else {
-                // Dummy node: use center
-                let dummy_cy = node.y + node.height / 2.0;
-                waypoints.push((cx, dummy_cy));
+                // Dummy node: these always have zero width/height, so
+                // their "edge" and "center" are the same point.
+                waypoints.push((cx, node.y));
             }
         }
 
@@ -855,6 +855,88 @@ mod tests {
         let routes = route_edges(&graph, &chains, RoutingStyle::Straight).unwrap();
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].waypoints.len(), 2);
+    }
+
+    #[test]
+    fn route_edges_waypoints_attach_at_node_edges_not_center() {
+        // Regression test: `node.x`/`node.y` are each node's CENTER
+        // (the convention `assign_coordinates` establishes), not a
+        // top-left-style bounding-box corner. Earlier code assumed the
+        // latter, which overshot the source node's actual bottom edge
+        // by a full node-height while landing exactly on the target
+        // node's center with no offset — an asymmetric bug invisible in
+        // tests that only checked waypoint *counts*, never values.
+        let mut source = node(0);
+        source.x = 0.0;
+        source.y = -128.0;
+        source.height = 48.0;
+
+        let mut target = node(1);
+        target.x = 0.0;
+        target.y = -24.0;
+        target.height = 48.0;
+
+        let graph = LayoutGraph {
+            nodes: vec![source, target],
+            edges: vec![],
+        };
+        let chains = vec![EdgeChain {
+            source: 0,
+            target: 1,
+            reversed: false,
+            chain: vec![0, 1],
+        }];
+
+        let routes = route_edges(&graph, &chains, RoutingStyle::Straight).unwrap();
+        assert_eq!(routes.len(), 1);
+        let waypoints = &routes[0].waypoints;
+        assert_eq!(waypoints.len(), 2);
+        // Source: bottom edge, half its height below center.
+        assert_eq!(waypoints[0], (0.0, -104.0));
+        // Target: top edge, half its height above center.
+        assert_eq!(waypoints[1], (0.0, -48.0));
+    }
+
+    #[test]
+    fn route_edges_dummy_node_waypoint_uses_its_own_center() {
+        // Dummy nodes always have zero width/height, so their "edge" and
+        // "center" coincide -- this pins that down explicitly rather than
+        // relying on it being incidentally true.
+        let mut source = node(0);
+        source.y = -100.0;
+        source.height = 40.0;
+
+        let mut dummy = node(1);
+        dummy.node_type = NodeType::Dummy;
+        dummy.y = 0.0;
+        dummy.width = 0.0;
+        dummy.height = 0.0;
+
+        let mut target = node(2);
+        target.y = 100.0;
+        target.height = 40.0;
+
+        let graph = LayoutGraph {
+            nodes: vec![source, dummy, target],
+            edges: vec![],
+        };
+        let chains = vec![EdgeChain {
+            source: 0,
+            target: 2,
+            reversed: false,
+            chain: vec![0, 1, 2],
+        }];
+
+        let routes = route_edges(&graph, &chains, RoutingStyle::Straight).unwrap();
+        // Straight routing only keeps first/last, so use Orthogonal here
+        // to exercise the dummy node's own waypoint too: orthogonal
+        // routing turns [source_edge=(0,-80), dummy_center=(0,0),
+        // target_edge=(0,80)] into midpoint-based L-bends, so its first
+        // point is the midpoint of the first two raw waypoints.
+        let routes_ortho = route_edges(&graph, &chains, RoutingStyle::Orthogonal).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes_ortho.len(), 1);
+        assert_eq!(routes_ortho[0].waypoints.first().unwrap().1, -40.0);
     }
 
     #[test]

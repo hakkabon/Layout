@@ -51,11 +51,11 @@ impl LayoutGraph {
     /// invariant; `add_node` assigns the id for you so it can't drift.
     ///
     /// ```
-    /// use layout_engine::{LayoutGraph, LayoutNode, NodeType};
+    /// use layout::{LayoutGraph, LayoutNode, NodeType};
     /// let mut graph = LayoutGraph::default();
     /// let a = graph.add_node(LayoutNode { width: 50.0, height: 30.0, ..Default::default() });
     /// let b = graph.add_node(LayoutNode { width: 50.0, height: 30.0, node_type: NodeType::Normal, ..Default::default() });
-    /// graph.edges.push(layout_engine::LayoutEdge { from: a, to: b, reversed: false });
+    /// graph.edges.push(layout::LayoutEdge { from: a, to: b, reversed: false });
     /// ```
     pub fn add_node(&mut self, mut node: LayoutNode) -> NodeId {
         let id = self.nodes.len();
