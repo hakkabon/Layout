@@ -1,0 +1,16 @@
+# UniFFI bindgen configuration.
+#
+# Every type crossing the FFI boundary here (FfiNode, FfiEdge, FfiConfig,
+# FfiAlgorithm, FfiRoutingStyle, FfiPoint, FfiPosition, FfiEdgeRoute,
+# FfiLayoutResult, FfiLayoutError) is a plain record or enum with no
+# `uniffi::Object` references — no interfaces, no class-backed handles.
+# That makes them eligible for UniFFI's Sendable support for Swift, which
+# eliminates the Swift 6 strict-concurrency warnings when these types
+# cross a Task/actor boundary (e.g. inside `Task.detached { ... }`).
+#
+# This is an "experimental_" flag per UniFFI's own naming convention, but
+# it only affects value types with no object references — exactly what
+# this crate exports — so the usual caveats around UniFFI's async/object
+# Sendable support (still incomplete as of UniFFI 0.28) don't apply here.
+[bindings.swift]
+experimental_sendable_value_types = true

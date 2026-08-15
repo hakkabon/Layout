@@ -58,7 +58,12 @@ bindings:
 	@cargo run $(BINDGEN_FEATURES) --bin uniffi-bindgen -- generate \
 		--library $(TARGET_DIR)/release/$(LIB_NAME) \
 		--language swift --out-dir $(BINDINGS_DIR)
-	# Patch UniFFI closure mutations for Swift 6 compiler compliance
+	# UniFFI 0.28 generates `private var initializationResult = { ... }()` for
+	# the bindings/scaffolding contract-version check. It's assigned exactly
+	# once inside that immediately-invoked closure and never mutated again,
+	# so Swift 6 (correctly) warns it should be `let`. Patch it here, before
+	# the file is split/copied anywhere downstream, so every copy is already
+	# fixed. Safe to drop once a future uniffi release fixes this upstream.
 	@sed -i '' 's/private var initializationResult/private let initializationResult/g' \
 		$(BINDINGS_DIR)/*.swift
 	@mv $(BINDINGS_DIR)/*.h $(HEADERS_DIR)/
