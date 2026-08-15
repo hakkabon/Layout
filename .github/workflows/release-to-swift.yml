@@ -85,9 +85,10 @@ jobs:
           
           cd swift-repo-dir
           
-          # 4. Inject the current version tag and calculated binary checksum into Package.swift
-          sed -i '' "s/__VERSION__/${VERSION}/g" Package.swift
-          sed -i '' "s/__CHECKSUM__/${CHECKSUM}/g" Package.swift
+          # 4. Explicitly rewrite the target URL and Checksum lines directly
+          # \1 restores the exact leading whitespace captured by \([[:space:]]*\)
+          sed -i '' "s@\([[:space:]]*\)url: \".*\"@\1url: \"https://github.com{VERSION}/Layout.xcframework.zip\"@g" Package.swift
+          sed -i '' "s@\([[:space:]]*\)checksum: \".*\"@\1checksum: \"${CHECKSUM}\"@g" Package.swift
           
           # 5. Commit changes and tag the Swift repository 
           git config --global user.name "Hakkabon Rust CI"
