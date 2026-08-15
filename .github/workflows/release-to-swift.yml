@@ -89,16 +89,17 @@ jobs:
           
           cd swift-repo-dir
           
-          # 6. Rewrite the target URL using the RUST_TAG (which needs the 'v' for the release path)
-          sed -i '' "s@\([[:space:]]*\)url: \".*\"@\1url: \"https://github.com\${RUST_TAG}/Layout.xcframework.zip\"@g" Package.swift
-          sed -i '' "s@\([[:space:]]*\)checksum: \".*\"@\1checksum: \"\${CHECKSUM}\"@g" Package.swift
+          # 6. Rewrite the target URL and Checksum using clear shell interpolation
+          # We use double quotes on the outside to read shell variables, and single quotes around sed syntax
+          sed -i '' "s@\([[:space:]]*\)url: \".*\"@\1url: \"https://github.com"${RUST_TAG}"/Layout.xcframework.zip\"@g" Package.swift
+          sed -i '' "s@\([[:space:]]*\)checksum: \".*\"@\1checksum: \""${CHECKSUM}"\"@g" Package.swift
           
-          # 7. Commit changes and tag the Swift repository using SWIFT_VERSION (NO 'v'!)
+          # 7. Commit changes and tag the Swift repository using SWIFT_VERSION
           git config --global user.name "Hakkabon Rust CI"
           git config --global user.email "ci@hakkabon.dev"
           git add Package.swift Sources/SwiftLayout/
           git commit -m "chore: automated sync for native version ${SWIFT_VERSION}"
           
-          # Create pure number tag for Swift PM compliance
           git tag ${SWIFT_VERSION}
           git push origin main --tags
+
