@@ -78,22 +78,25 @@ jobs:
           # 2. Strip the leading 'v' to make it a valid Swift SemVer string (e.g., 0.0.1)
           SWIFT_VERSION=${RUST_TAG#v}
           
-          # 3. Compute the cryptographic SHA256 checksum needed by Swift PM
+          # 3. Construct the release download URL
+          DOWNLOAD_URL="https://github.com/hakkabon/Layout/releases/download/${RUST_TAG}/Layout.xcframework.zip"
+          
+          # 4. Compute the cryptographic SHA256 checksum needed by Swift PM
           CHECKSUM=$(swift package compute-checksum Layout.xcframework.zip)
           
-          # 4. Clone the destination Swift wrapper repository
-          git clone https://x-access-token:${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}@://github.com{{ env.SWIFT_REPO }}.git swift-repo-dir
+          # 5. Clone the destination Swift wrapper repository
+          git clone https://x-access-token:${{ secrets.SWIFT_REPO_ACCESS_TOKEN }}@github.com/${{ env.SWIFT_REPO }}.git swift-repo-dir
           
-          # 5. Copy the freshly generated UniFFI Swift binding source file into the Swift repo
+          # 6. Copy the freshly generated UniFFI Swift binding source file into the Swift repo
           cp staging_swift/*.swift swift-repo-dir/Sources/SwiftLayout/
           
           cd swift-repo-dir
           
-          # 6. Rewrite the target URL and Checksum with the full repository release path
-          sed -i '' "s@\([[:space:]]*\)url: \".*\"@\1url: \"https://github.com{RUST_TAG}/Layout.xcframework.zip\"@g" Package.swift
-          sed -i '' "s@\([[:space:]]*\)checksum: \".*\"@\1checksum: \"${CHECKSUM}\"@g" Package.swift
+          # 7. Rewrite the target URL and Checksum with the full repository release path
+          sed -i '' "s@url: \".*\"@url: \"${DOWNLOAD_URL}\"@g" Package.swift
+          sed -i '' "s@checksum: \".*\"@checksum: \"${CHECKSUM}\"@g" Package.swift
           
-          # 7. Commit changes and tag the Swift repository using SWIFT_VERSION
+          # 8. Commit changes and tag the Swift repository using SWIFT_VERSION
           git config --global user.name "Hakkabon Rust CI"
           git config --global user.email "ci@hakkabon.dev"
           git add Package.swift Sources/SwiftLayout/
@@ -101,4 +104,3 @@ jobs:
           
           git tag ${SWIFT_VERSION}
           git push origin main --tags
-
