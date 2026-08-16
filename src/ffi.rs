@@ -36,6 +36,10 @@ pub struct FfiNode {
 pub struct FfiEdge {
     pub from: u64,
     pub to: u64,
+    /// Optional label width for obstacle-free label placement.
+    pub label_width: Option<f32>,
+    /// Optional label height for obstacle-free label placement.
+    pub label_height: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
@@ -115,6 +119,15 @@ pub struct FfiRect {
     pub height: f32,
 }
 
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct FfiArrowhead {
+    pub tip: FfiPoint,
+    /// Tangent angle in radians (pointing in the direction of the edge flow).
+    pub angle: f32,
+    pub left: FfiPoint,
+    pub right: FfiPoint,
+}
+
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum FfiPathSegment {
     Line {
@@ -146,6 +159,10 @@ pub struct FfiEdgeRoute {
     pub is_self_loop: bool,
     pub waypoints: Vec<FfiPoint>,
     pub segments: Vec<FfiPathSegment>,
+    /// Precomputed arrowhead geometry (tip + wing vertices) at the target end.
+    pub arrowhead: Option<FfiArrowhead>,
+    /// Obstacle-free label center position, if the edge had label dimensions.
+    pub label_position: Option<FfiPoint>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -237,10 +254,15 @@ fn run_pipeline(
         let to = *id_map.get(&e.to).ok_or_else(|| {
             FfiLayoutError::InvalidGraph(format!("edge references unknown node id {}", e.to))
         })?;
+        let label_size = match (e.label_width, e.label_height) {
+            (Some(w), Some(h)) => Some((w, h)),
+            _ => None,
+        };
         graph.edges.push(LayoutEdge {
             from,
             to,
             reversed: false,
+            label_size,
         });
     }
 
@@ -250,6 +272,8 @@ fn run_pipeline(
         .map(|e| FfiEdge {
             from: external_ids[e.from],
             to: external_ids[e.to],
+            label_width: e.label_size.map(|(w, _)| w),
+            label_height: e.label_size.map(|(_, h)| h),
         })
         .collect();
 
@@ -264,6 +288,7 @@ fn run_pipeline(
             target: loop_edge.to,
             reversed: false,
             is_self_loop: true,
+            label_size: loop_edge.label_size,
             chain: vec![loop_edge.from],
         });
     }
@@ -371,6 +396,14 @@ fn run_pipeline(
                 }
             }
 
+            let ffi_arrowhead = r.arrowhead.map(|ah| FfiArrowhead {
+                tip: FfiPoint { x: ah.tip_x, y: ah.tip_y },
+                angle: ah.angle,
+                left: FfiPoint { x: ah.left_x, y: ah.left_y },
+                right: FfiPoint { x: ah.right_x, y: ah.right_y },
+            });
+            let ffi_label_pos = r.label_pos.map(|(x, y)| FfiPoint { x, y });
+
             FfiEdgeRoute {
                 from: external_ids[r.source],
                 to: external_ids[r.target],
@@ -378,6 +411,8 @@ fn run_pipeline(
                 is_self_loop: r.is_self_loop,
                 waypoints: pts,
                 segments,
+                arrowhead: ffi_arrowhead,
+                label_position: ffi_label_pos,
             }
         })
         .collect();

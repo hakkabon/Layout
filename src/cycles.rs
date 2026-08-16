@@ -91,8 +91,8 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 1, to: 2, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 2, reversed: false, label_size: None },
             ],
         };
         let reversed = break_cycles(&mut graph);
@@ -107,9 +107,9 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 1, to: 2, reversed: false },
-                LayoutEdge { from: 2, to: 0, reversed: false }, // closes cycle
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 2, to: 0, reversed: false, label_size: None }, // closes cycle
             ],
         };
         let reversed = break_cycles(&mut graph);
@@ -124,10 +124,10 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 0, to: 2, reversed: false },
-                LayoutEdge { from: 1, to: 3, reversed: false },
-                LayoutEdge { from: 2, to: 3, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 0, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 3, reversed: false, label_size: None },
+                LayoutEdge { from: 2, to: 3, reversed: false, label_size: None },
             ],
         };
         let reversed = break_cycles(&mut graph);

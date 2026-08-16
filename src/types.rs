@@ -32,6 +32,9 @@ pub struct LayoutEdge {
     /// True if this edge was reversed by [`break_cycles`] and should be
     /// drawn with its arrowhead at the visually higher end.
     pub reversed: bool,
+    /// Optional label width and height (for obstacle-free label placement).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub label_size: Option<(f32, f32)>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -55,7 +58,7 @@ impl LayoutGraph {
     /// let mut graph = LayoutGraph::default();
     /// let a = graph.add_node(LayoutNode { width: 50.0, height: 30.0, ..Default::default() });
     /// let b = graph.add_node(LayoutNode { width: 50.0, height: 30.0, node_type: NodeType::Normal, ..Default::default() });
-    /// graph.edges.push(layout::LayoutEdge { from: a, to: b, reversed: false });
+    /// graph.edges.push(layout::LayoutEdge { from: a, to: b, reversed: false, label_size: None });
     /// ```
     pub fn add_node(&mut self, mut node: LayoutNode) -> NodeId {
         let id = self.nodes.len();
@@ -162,6 +165,23 @@ pub struct LayoutRect {
     pub height: f32,
 }
 
+/// Arrowhead geometry at an edge destination.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Arrowhead {
+    /// Tip point where the arrow touches the target node boundary.
+    pub tip_x: f32,
+    pub tip_y: f32,
+    /// Tangent angle in radians (pointing in the direction of the edge flow).
+    pub angle: f32,
+    /// Left wing endpoint.
+    pub left_x: f32,
+    pub left_y: f32,
+    /// Right wing endpoint.
+    pub right_x: f32,
+    pub right_y: f32,
+}
+
 /// Tracks how a single original (possibly long) edge was decomposed into a
 /// chain of single-rank segments by Rank Assignment.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -171,6 +191,7 @@ pub struct EdgeChain {
     pub target: NodeId,   // original edge target
     pub reversed: bool,   // mirrored from the LayoutEdge
     pub is_self_loop: bool,
+    pub label_size: Option<(f32, f32)>,
     /// All waypoint nodes in order: [source, dummy₁, dummy₂, …, target].
     pub chain: Vec<NodeId>,
 }
@@ -199,6 +220,10 @@ pub struct EdgeRoute {
     /// - Bezier:      cubic bezier quadruples packed as (P0, C1, C2, P1, C1', C2', P2, …)
     ///                starting at source attachment and ending at target attachment.
     pub waypoints: Vec<(f32, f32)>,
+    /// Computed arrowhead geometry at the target node boundary.
+    pub arrowhead: Option<Arrowhead>,
+    /// Computed obstacle-free label center coordinate (x, y) if a label_size was provided.
+    pub label_pos: Option<(f32, f32)>,
 }
 
 /// Configuration for coordinate assignment.

@@ -5,7 +5,7 @@
 //! - Weighted median relaxation (simpler, faster)
 //! - Brandes-Köpf alignment (produces more balanced layouts)
 
-use crate::types::{LayoutGraph, RankSystem, NodeId, EdgeChain, EdgeRoute, RoutingStyle, LayoutError, LayoutDirection};
+use crate::types::{LayoutGraph, RankSystem, NodeId, NodeType, EdgeChain, EdgeRoute, RoutingStyle, LayoutError, LayoutDirection, Arrowhead};
 
 /// Configuration for coordinate assignment algorithms.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -496,6 +496,171 @@ fn compute_alignment(
     }
 }
 
+/// Computes arrowhead geometry at the destination attachment point of an edge.
+pub fn compute_arrowhead(waypoints: &[(f32, f32)], style: RoutingStyle) -> Option<Arrowhead> {
+    if waypoints.len() < 2 {
+        return None;
+    }
+
+    let tip = *waypoints.last().unwrap();
+    let (dx, dy) = match style {
+        RoutingStyle::Bezier => {
+            if waypoints.len() >= 4 && (waypoints.len() - 1) % 3 == 0 {
+                let c2 = waypoints[waypoints.len() - 2];
+                let mut d_x = tip.0 - c2.0;
+                let mut d_y = tip.1 - c2.1;
+                if d_x.hypot(d_y) < 1e-4 {
+                    let c1 = waypoints[waypoints.len() - 3];
+                    d_x = tip.0 - c1.0;
+                    d_y = tip.1 - c1.1;
+                }
+                if d_x.hypot(d_y) < 1e-4 {
+                    let p0 = waypoints[0];
+                    d_x = tip.0 - p0.0;
+                    d_y = tip.1 - p0.1;
+                }
+                (d_x, d_y)
+            } else {
+                let prev = waypoints[waypoints.len() - 2];
+                (tip.0 - prev.0, tip.1 - prev.1)
+            }
+        }
+        RoutingStyle::Straight | RoutingStyle::Orthogonal => {
+            let prev = waypoints[waypoints.len() - 2];
+            (tip.0 - prev.0, tip.1 - prev.1)
+        }
+    };
+
+    let angle = dy.atan2(dx);
+    let wing_len: f32 = 9.0;
+    let wing_angle: f32 = 28.0_f32.to_radians();
+
+    let left_x = tip.0 - wing_len * (angle - wing_angle).cos();
+    let left_y = tip.1 - wing_len * (angle - wing_angle).sin();
+    let right_x = tip.0 - wing_len * (angle + wing_angle).cos();
+    let right_y = tip.1 - wing_len * (angle + wing_angle).sin();
+
+    Some(Arrowhead {
+        tip_x: tip.0,
+        tip_y: tip.1,
+        angle,
+        left_x,
+        left_y,
+        right_x,
+        right_y,
+    })
+}
+
+/// Computes an obstacle-free label position (center x, y) near the midpoint of the edge route.
+pub fn compute_label_position(
+    waypoints: &[(f32, f32)],
+    label_size: Option<(f32, f32)>,
+    graph: &LayoutGraph,
+    style: RoutingStyle,
+) -> Option<(f32, f32)> {
+    let (lw, lh) = label_size?;
+    if waypoints.len() < 2 {
+        return None;
+    }
+
+    let (mid, tangent) = match style {
+        RoutingStyle::Bezier if waypoints.len() == 4 => {
+            let p0 = waypoints[0];
+            let c1 = waypoints[1];
+            let c2 = waypoints[2];
+            let p1 = waypoints[3];
+
+            // B(0.5)
+            let mx = 0.125 * p0.0 + 0.375 * c1.0 + 0.375 * c2.0 + 0.125 * p1.0;
+            let my = 0.125 * p0.1 + 0.375 * c1.1 + 0.375 * c2.1 + 0.125 * p1.1;
+
+            // B'(0.5) = 0.75 * (P1 + C2 - C1 - P0)
+            let tx = 0.75 * (p1.0 + c2.0 - c1.0 - p0.0);
+            let ty = 0.75 * (p1.1 + c2.1 - c1.1 - p0.1);
+            let len = tx.hypot(ty).max(1e-4);
+            ((mx, my), (tx / len, ty / len))
+        }
+        _ => {
+            // Polyline arc-length midpoint
+            let mut total_len = 0.0;
+            for i in 0..waypoints.len() - 1 {
+                let d = (waypoints[i + 1].0 - waypoints[i].0).hypot(waypoints[i + 1].1 - waypoints[i].1);
+                total_len += d;
+            }
+            let half_len = total_len / 2.0;
+            let mut accum = 0.0;
+            let mut found_mid = ((waypoints[0].0 + waypoints[waypoints.len() - 1].0) / 2.0, (waypoints[0].1 + waypoints[waypoints.len() - 1].1) / 2.0);
+            let mut found_tangent = (0.0, 1.0);
+
+            for i in 0..waypoints.len() - 1 {
+                let p1 = waypoints[i];
+                let p2 = waypoints[i + 1];
+                let seg_len = (p2.0 - p1.0).hypot(p2.1 - p1.1);
+                if accum + seg_len >= half_len || i == waypoints.len() - 2 {
+                    let remain = (half_len - accum).max(0.0);
+                    let t = if seg_len > 1e-4 { remain / seg_len } else { 0.5 };
+                    found_mid = (p1.0 + (p2.0 - p1.0) * t, p1.1 + (p2.1 - p1.1) * t);
+                    let len = seg_len.max(1e-4);
+                    found_tangent = ((p2.0 - p1.0) / len, (p2.1 - p1.1) / len);
+                    break;
+                }
+                accum += seg_len;
+            }
+            (found_mid, found_tangent)
+        }
+    };
+
+    let nx = -tangent.1;
+    let ny = tangent.0;
+    let offset_dist = 10.0 + lh.max(lw) * 0.4;
+
+    // Test candidate positions: offset left, offset right, and center
+    let candidates = [
+        (mid.0 + nx * offset_dist, mid.1 + ny * offset_dist),
+        (mid.0 - nx * offset_dist, mid.1 - ny * offset_dist),
+        (mid.0, mid.1),
+    ];
+
+    let mut best_candidate = candidates[0];
+    let mut min_overlap_score = f32::INFINITY;
+
+    for &(cx, cy) in &candidates {
+        let label_min_x = cx - lw / 2.0;
+        let label_max_x = cx + lw / 2.0;
+        let label_min_y = cy - lh / 2.0;
+        let label_max_y = cy + lh / 2.0;
+
+        let mut overlap_score = 0.0;
+        for node in &graph.nodes {
+            if node.node_type != NodeType::Normal {
+                continue;
+            }
+            let node_min_x = node.x - node.width / 2.0;
+            let node_max_x = node.x + node.width / 2.0;
+            let node_min_y = node.y - node.height / 2.0;
+            let node_max_y = node.y + node.height / 2.0;
+
+            let overlap_x = (label_max_x.min(node_max_x) - label_min_x.max(node_min_x)).max(0.0);
+            let overlap_y = (label_max_y.min(node_max_y) - label_min_y.max(node_min_y)).max(0.0);
+            let overlap_area = overlap_x * overlap_y;
+
+            if overlap_area > 0.0 {
+                overlap_score += overlap_area + 1000.0;
+            } else {
+                let dist = (cx - node.x).hypot(cy - node.y);
+                overlap_score += 1.0 / dist.max(1.0);
+            }
+        }
+
+        if overlap_score < min_overlap_score {
+            min_overlap_score = overlap_score;
+            best_candidate = (cx, cy);
+        }
+    }
+
+    Some(best_candidate)
+}
+
 /// Routes edges through the graph based on node positions and edge chains.
 pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyle) -> Result<Vec<EdgeRoute>, LayoutError> {
     use std::collections::HashMap;
@@ -548,12 +713,17 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
                 RoutingStyle::Bezier => vec![p0, c1, c2, p1],
             };
 
+            let arrowhead = compute_arrowhead(&loop_waypoints, style);
+            let label_pos = compute_label_position(&loop_waypoints, chain.label_size, graph, style);
+
             routes.push(EdgeRoute {
                 source: chain.source,
                 target: chain.target,
                 reversed: chain.reversed,
                 is_self_loop: true,
                 waypoints: loop_waypoints,
+                arrowhead,
+                label_pos,
             });
             continue;
         }
@@ -604,11 +774,11 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
             continue;
         }
 
-        let route = match style {
+        let route_waypoints = match style {
             RoutingStyle::Straight => {
                 let first = *waypoints.first().unwrap();
                 let last = *waypoints.last().unwrap();
-                let straight_points = if offset.abs() > 0.001 {
+                if offset.abs() > 0.001 {
                     let mid_x = (first.0 + last.0) / 2.0;
                     let mid_y = (first.1 + last.1) / 2.0;
                     let dx = last.0 - first.0;
@@ -619,14 +789,6 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
                     vec![first, (mid_x + nx * offset, mid_y + ny * offset), last]
                 } else {
                     vec![first, last]
-                };
-
-                EdgeRoute {
-                    source: chain.source,
-                    target: chain.target,
-                    reversed: chain.reversed,
-                    is_self_loop: false,
-                    waypoints: straight_points,
                 }
             }
             RoutingStyle::Orthogonal => {
@@ -640,14 +802,7 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
                     ortho_points.push((x2, mid_y));
                 }
                 ortho_points.push(*waypoints.last().unwrap());
-
-                EdgeRoute {
-                    source: chain.source,
-                    target: chain.target,
-                    reversed: chain.reversed,
-                    is_self_loop: false,
-                    waypoints: ortho_points,
-                }
+                ortho_points
             }
             RoutingStyle::Bezier => {
                 let mut bezier_points: Vec<(f32, f32)> = Vec::new();
@@ -704,18 +859,22 @@ pub fn route_edges(graph: &LayoutGraph, chains: &[EdgeChain], style: RoutingStyl
                         bezier_points.push(p1);
                     }
                 }
-
-                EdgeRoute {
-                    source: chain.source,
-                    target: chain.target,
-                    reversed: chain.reversed,
-                    is_self_loop: false,
-                    waypoints: bezier_points,
-                }
+                bezier_points
             }
         };
 
-        routes.push(route);
+        let arrowhead = compute_arrowhead(&route_waypoints, style);
+        let label_pos = compute_label_position(&route_waypoints, chain.label_size, graph, style);
+
+        routes.push(EdgeRoute {
+            source: chain.source,
+            target: chain.target,
+            reversed: chain.reversed,
+            is_self_loop: false,
+            waypoints: route_waypoints,
+            arrowhead,
+            label_pos,
+        });
     }
 
     Ok(routes)

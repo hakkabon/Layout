@@ -39,6 +39,7 @@ pub fn insert_dummy_nodes(
         let orig_source = if edge.reversed { edge.to } else { edge.from };
         let orig_target = if edge.reversed { edge.from } else { edge.to };
         let is_self_loop = edge.from == edge.to;
+        let label_size = edge.label_size;
 
         if is_self_loop {
             chains.push(EdgeChain {
@@ -46,12 +47,14 @@ pub fn insert_dummy_nodes(
                 target: orig_target,
                 reversed: false,
                 is_self_loop: true,
+                label_size,
                 chain: vec![edge.from],
             });
             new_edges.push(LayoutEdge {
                 from: edge.from,
                 to: edge.to,
                 reversed: false,
+                label_size,
             });
         } else if span == 1 {
             // Short edge - no dummies needed
@@ -60,12 +63,14 @@ pub fn insert_dummy_nodes(
                 target: orig_target,
                 reversed: edge.reversed,
                 is_self_loop: false,
+                label_size,
                 chain: vec![edge.from, edge.to],
             });
             new_edges.push(LayoutEdge {
                 from: edge.from,
                 to: edge.to,
                 reversed: edge.reversed,
+                label_size,
             });
         } else if span > 1 {
             // Long edge - insert dummies
@@ -101,6 +106,7 @@ pub fn insert_dummy_nodes(
                     from: prev,
                     to: dummy_id,
                     reversed: false,
+                    label_size: None,
                 });
                 chain.push(dummy_id);
                 prev = dummy_id;
@@ -111,6 +117,7 @@ pub fn insert_dummy_nodes(
                 from: prev,
                 to: edge.to,
                 reversed: false,
+                label_size: None,
             });
             chain.push(edge.to);
 
@@ -119,6 +126,7 @@ pub fn insert_dummy_nodes(
                 target: orig_target,
                 reversed: edge.reversed,
                 is_self_loop: false,
+                label_size,
                 chain,
             });
         } else {
@@ -128,12 +136,14 @@ pub fn insert_dummy_nodes(
                 target: orig_target,
                 reversed: edge.reversed,
                 is_self_loop: false,
+                label_size,
                 chain: vec![edge.from, edge.to],
             });
             new_edges.push(LayoutEdge {
                 from: edge.from,
                 to: edge.to,
                 reversed: edge.reversed,
+                label_size,
             });
         }
     }

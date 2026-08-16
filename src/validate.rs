@@ -62,7 +62,7 @@ mod tests {
     fn valid_graph_passes_validation() {
         let graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
-            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false, label_size: None }],
         };
         assert!(validate_graph(&graph).is_ok());
     }
@@ -71,7 +71,7 @@ mod tests {
     fn invalid_edge_endpoint_fails_validation() {
         let graph = LayoutGraph {
             nodes: vec![node(0)],
-            edges: vec![LayoutEdge { from: 0, to: 5, reversed: false }],
+            edges: vec![LayoutEdge { from: 0, to: 5, reversed: false, label_size: None }],
         };
         assert!(validate_graph(&graph).is_err());
     }
@@ -81,8 +81,8 @@ mod tests {
         let graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 1, to: 1, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 1, reversed: false, label_size: None },
             ],
         };
         match validate_graph(&graph) {
@@ -96,8 +96,8 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 1, to: 1, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 1, reversed: false, label_size: None },
             ],
         };
         let loops = graph.extract_self_loops();
