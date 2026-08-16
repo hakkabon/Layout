@@ -563,63 +563,99 @@ pub fn compute_label_position(
         return None;
     }
 
-    let (mid, tangent) = match style {
-        RoutingStyle::Bezier if waypoints.len() == 4 => {
-            let p0 = waypoints[0];
-            let c1 = waypoints[1];
-            let c2 = waypoints[2];
-            let p1 = waypoints[3];
+    struct CurveSample {
+        pos: (f32, f32),
+        tangent: (f32, f32),
+    }
+    let mut samples: Vec<CurveSample> = Vec::new();
 
-            // B(0.5)
-            let mx = 0.125 * p0.0 + 0.375 * c1.0 + 0.375 * c2.0 + 0.125 * p1.0;
-            let my = 0.125 * p0.1 + 0.375 * c1.1 + 0.375 * c2.1 + 0.125 * p1.1;
+    // Evaluate multiple points along the curve (20% to 80% of arc length)
+    if style == RoutingStyle::Bezier && waypoints.len() == 4 {
+        let p0 = waypoints[0];
+        let c1 = waypoints[1];
+        let c2 = waypoints[2];
+        let p1 = waypoints[3];
 
-            // B'(0.5) = 0.75 * (P1 + C2 - C1 - P0)
-            let tx = 0.75 * (p1.0 + c2.0 - c1.0 - p0.0);
-            let ty = 0.75 * (p1.1 + c2.1 - c1.1 - p0.1);
+        for &t in &[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] {
+            let mt = 1.0 - t;
+            let mt2 = mt * mt; let mt3 = mt2 * mt;
+            let t2 = t * t; let t3 = t2 * t;
+
+            let x = mt3 * p0.0 + 3.0 * mt2 * t * c1.0 + 3.0 * mt * t2 * c2.0 + t3 * p1.0;
+            let y = mt3 * p0.1 + 3.0 * mt2 * t * c1.1 + 3.0 * mt * t2 * c2.1 + t3 * p1.1;
+
+            let tx = 3.0 * mt2 * (c1.0 - p0.0) + 6.0 * mt * t * (c2.0 - c1.0) + 3.0 * t2 * (p1.0 - c2.0);
+            let ty = 3.0 * mt2 * (c1.1 - p0.1) + 6.0 * mt * t * (c2.1 - c1.1) + 3.0 * t2 * (p1.1 - c2.1);
             let len = tx.hypot(ty).max(1e-4);
-            ((mx, my), (tx / len, ty / len))
-        }
-        _ => {
-            // Polyline arc-length midpoint
-            let mut total_len = 0.0;
-            for i in 0..waypoints.len() - 1 {
-                let d = (waypoints[i + 1].0 - waypoints[i].0).hypot(waypoints[i + 1].1 - waypoints[i].1);
-                total_len += d;
-            }
-            let half_len = total_len / 2.0;
-            let mut accum = 0.0;
-            let mut found_mid = ((waypoints[0].0 + waypoints[waypoints.len() - 1].0) / 2.0, (waypoints[0].1 + waypoints[waypoints.len() - 1].1) / 2.0);
-            let mut found_tangent = (0.0, 1.0);
 
-            for i in 0..waypoints.len() - 1 {
-                let p1 = waypoints[i];
-                let p2 = waypoints[i + 1];
+            samples.push(CurveSample { pos: (x, y), tangent: (tx / len, ty / len) });
+        }
+    } else {
+        // Polyline or multi-segment Bezier: Sample into a dense polyline first
+        let mut dense_points = Vec::new();
+        if style == RoutingStyle::Bezier && waypoints.len() >= 4 && (waypoints.len() - 1) % 3 == 0 {
+            let num_segments = (waypoints.len() - 1) / 3;
+            for s in 0..num_segments {
+                let p0 = waypoints[3 * s];
+                let c1 = waypoints[3 * s + 1];
+                let c2 = waypoints[3 * s + 2];
+                let p1 = waypoints[3 * s + 3];
+                for i in 0..=20 {
+                    let t = i as f32 / 20.0;
+                    let t2 = t * t; let t3 = t2 * t;
+                    let mt = 1.0 - t; let mt2 = mt * mt; let mt3 = mt2 * mt;
+                    let x = mt3 * p0.0 + 3.0 * mt2 * t * c1.0 + 3.0 * mt * t2 * c2.0 + t3 * p1.0;
+                    let y = mt3 * p0.1 + 3.0 * mt2 * t * c1.1 + 3.0 * mt * t2 * c2.1 + t3 * p1.1;
+                    if dense_points.is_empty() || i > 0 {
+                        dense_points.push((x, y));
+                    }
+                }
+            }
+        } else {
+            dense_points.extend_from_slice(waypoints);
+        }
+
+        let mut total_len = 0.0;
+        for i in 0..dense_points.len() - 1 {
+            let d = (dense_points[i + 1].0 - dense_points[i].0).hypot(dense_points[i + 1].1 - dense_points[i].1);
+            total_len += d;
+        }
+
+        for &frac in &[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] {
+            let target_len = total_len * frac;
+            let mut accum = 0.0;
+            let mut found_pos = dense_points[0];
+            let mut found_tan = (0.0, 1.0);
+
+            for i in 0..dense_points.len() - 1 {
+                let p1 = dense_points[i];
+                let p2 = dense_points[i + 1];
                 let seg_len = (p2.0 - p1.0).hypot(p2.1 - p1.1);
-                if accum + seg_len >= half_len || i == waypoints.len() - 2 {
-                    let remain = (half_len - accum).max(0.0);
+                if accum + seg_len >= target_len || i == dense_points.len() - 2 {
+                    let remain = (target_len - accum).max(0.0);
                     let t = if seg_len > 1e-4 { remain / seg_len } else { 0.5 };
-                    found_mid = (p1.0 + (p2.0 - p1.0) * t, p1.1 + (p2.1 - p1.1) * t);
+                    found_pos = (p1.0 + (p2.0 - p1.0) * t, p1.1 + (p2.1 - p1.1) * t);
                     let len = seg_len.max(1e-4);
-                    found_tangent = ((p2.0 - p1.0) / len, (p2.1 - p1.1) / len);
+                    found_tan = ((p2.0 - p1.0) / len, (p2.1 - p1.1) / len);
                     break;
                 }
                 accum += seg_len;
             }
-            (found_mid, found_tangent)
+            samples.push(CurveSample { pos: found_pos, tangent: found_tan });
         }
-    };
+    }
 
-    let nx = -tangent.1;
-    let ny = tangent.0;
     let offset_dist = 10.0 + lh.max(lw) * 0.4;
+    let mut candidates: Vec<(f32, f32)> = Vec::new();
 
-    // Test candidate positions: offset left, offset right, and center
-    let candidates = [
-        (mid.0 + nx * offset_dist, mid.1 + ny * offset_dist),
-        (mid.0 - nx * offset_dist, mid.1 - ny * offset_dist),
-        (mid.0, mid.1),
-    ];
+    // Generate 3 normal offset candidates for each of the 7 sample points (21 candidates total)
+    for sample in &samples {
+        let nx = -sample.tangent.1;
+        let ny = sample.tangent.0;
+        candidates.push((sample.pos.0 + nx * offset_dist, sample.pos.1 + ny * offset_dist));
+        candidates.push((sample.pos.0 - nx * offset_dist, sample.pos.1 - ny * offset_dist));
+        candidates.push(sample.pos);
+    }
 
     let mut best_candidate = candidates[0];
     let mut min_overlap_score = f32::INFINITY;
@@ -647,8 +683,11 @@ pub fn compute_label_position(
             if overlap_area > 0.0 {
                 overlap_score += overlap_area + 1000.0;
             } else {
-                let dist = (cx - node.x).hypot(cy - node.y);
-                overlap_score += 1.0 / dist.max(1.0);
+                // Fix: Calculate distance to the bounding box, not the center
+                let dx = (node_min_x - cx).max(cx - node_max_x).max(0.0);
+                let dy = (node_min_y - cy).max(cy - node_max_y).max(0.0);
+                let dist_to_bbox = dx.hypot(dy);
+                overlap_score += 1.0 / dist_to_bbox.max(1.0);
             }
         }
 
