@@ -437,9 +437,9 @@ mod tests {
             FfiNode { id: 300, width: 40.0, height: 20.0 },
         ];
         let edges = vec![
-            FfiEdge { from: 100, to: 200 },
-            FfiEdge { from: 200, to: 300 },
-            FfiEdge { from: 100, to: 100 }, // self loop
+            FfiEdge { from: 100, to: 200, label_height: None, label_width: None },
+            FfiEdge { from: 200, to: 300, label_height: None, label_width: None },
+            FfiEdge { from: 100, to: 100, label_height: None, label_width: None }, // self loop
         ];
         let config = FfiConfig {
             h_gap: 20.0,
@@ -479,7 +479,7 @@ mod tests {
             FfiNode { id: 2, width: 50.0, height: 30.0 },
         ];
         let edges = vec![
-            FfiEdge { from: 1, to: 2 },
+            FfiEdge { from: 1, to: 2, label_height: None, label_width: None },
         ];
         let config = FfiConfig {
             h_gap: 20.0,
