@@ -119,10 +119,10 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(3), node(1), node(2)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 0, to: 2, reversed: false },
-                LayoutEdge { from: 1, to: 3, reversed: false },
-                LayoutEdge { from: 2, to: 3, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 0, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 3, reversed: false, label_size: None },
+                LayoutEdge { from: 2, to: 3, reversed: false, label_size: None },
             ],
         };
         // Re-sort nodes by id so NodeId == index
@@ -142,9 +142,9 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 1, to: 2, reversed: false },
-                LayoutEdge { from: 2, to: 0, reversed: false }, // closes the cycle
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 2, to: 0, reversed: false, label_size: None }, // closes the cycle
             ],
         };
         let result = LayoutPipeline::assign_ranks(&mut graph);
@@ -156,9 +156,9 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 1, to: 2, reversed: false },
-                LayoutEdge { from: 2, to: 3, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 2, to: 3, reversed: false, label_size: None },
             ],
         };
         let ranks = LayoutPipeline::assign_ranks(&mut graph).unwrap();

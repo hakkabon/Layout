@@ -28,6 +28,15 @@ jobs:
           rustup +nightly component add rust-src
           rustup +nightly target add aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 
+      - name: Run Test Suite
+        run: |
+          # Gate the release on the test suite actually passing. This runs
+          # before any build/packaging step so a broken build (or a broken
+          # test suite that silently stopped compiling) fails the workflow
+          # instead of shipping a release and auto-syncing it to the Swift
+          # wrapper repo.
+          cargo test --all-features
+
       - name: Compile XCFramework and Bindings via Makefile
         run: |
           # Runs clean, macos, ios, bindings, and xcframework targets

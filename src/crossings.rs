@@ -220,8 +220,8 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3)],
             edges: vec![
-                LayoutEdge { from: 0, to: 3, reversed: false },
-                LayoutEdge { from: 1, to: 2, reversed: false },
+                LayoutEdge { from: 0, to: 3, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 2, reversed: false, label_size: None },
             ],
         };
         graph.nodes[0].rank = Some(0);
@@ -252,8 +252,8 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3)],
             edges: vec![
-                LayoutEdge { from: 0, to: 2, reversed: false },
-                LayoutEdge { from: 1, to: 3, reversed: false },
+                LayoutEdge { from: 0, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 3, reversed: false, label_size: None },
             ],
         };
         graph.nodes[0].rank = Some(0);
@@ -282,7 +282,7 @@ mod tests {
     fn single_node_per_layer_unchanged() {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
-            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false, label_size: None }],
         };
         graph.nodes[0].rank = Some(0);
         graph.nodes[1].rank = Some(1);

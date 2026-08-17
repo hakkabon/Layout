@@ -941,7 +941,7 @@ mod tests {
     fn simple_graph_gets_coordinates_median_relax() {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
-            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false, label_size: None }],
         };
         let ranks = RankSystem {
             layers: vec![vec![0], vec![1]],
@@ -968,10 +968,10 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 0, to: 2, reversed: false },
-                LayoutEdge { from: 1, to: 3, reversed: false },
-                LayoutEdge { from: 2, to: 3, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 0, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 3, reversed: false, label_size: None },
+                LayoutEdge { from: 2, to: 3, reversed: false, label_size: None },
             ],
         };
         let ranks = RankSystem {
@@ -1016,12 +1016,12 @@ mod tests {
         let base_graph = || LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3), node(4)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 0, to: 2, reversed: false },
-                LayoutEdge { from: 0, to: 3, reversed: false },
-                LayoutEdge { from: 1, to: 4, reversed: false },
-                LayoutEdge { from: 2, to: 4, reversed: false },
-                LayoutEdge { from: 3, to: 4, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 0, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 0, to: 3, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 4, reversed: false, label_size: None },
+                LayoutEdge { from: 2, to: 4, reversed: false, label_size: None },
+                LayoutEdge { from: 3, to: 4, reversed: false, label_size: None },
             ],
         };
         let ranks = RankSystem {
@@ -1083,6 +1083,7 @@ mod tests {
             target: 1,
             reversed: false,
             is_self_loop: false,
+            label_size: None,
             chain: vec![0, 1],
         }];
 
@@ -1112,6 +1113,7 @@ mod tests {
             target: 1,
             reversed: false,
             is_self_loop: false,
+            label_size: None,
             chain: vec![0, 1],
         }];
 
@@ -1150,6 +1152,7 @@ mod tests {
             target: 2,
             reversed: false,
             is_self_loop: false,
+            label_size: None,
             chain: vec![0, 1, 2],
         }];
 
@@ -1174,6 +1177,7 @@ mod tests {
             target: 2,
             reversed: false,
             is_self_loop: false,
+            label_size: None,
             chain: vec![0, 1, 2],
         }];
 
@@ -1193,6 +1197,7 @@ mod tests {
             target: 0,
             reversed: false,
             is_self_loop: true,
+            label_size: None,
             chain: vec![0],
         }];
 
@@ -1214,6 +1219,7 @@ mod tests {
                 target: 1,
                 reversed: false,
                 is_self_loop: false,
+                label_size: None,
                 chain: vec![0, 1],
             },
             EdgeChain {
@@ -1221,6 +1227,7 @@ mod tests {
                 target: 1,
                 reversed: false,
                 is_self_loop: false,
+                label_size: None,
                 chain: vec![0, 1],
             },
         ];
@@ -1235,7 +1242,7 @@ mod tests {
     fn left_to_right_layout_coordinates() {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
-            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false, label_size: None }],
         };
         let ranks = RankSystem {
             layers: vec![vec![0], vec![1]],
@@ -1260,10 +1267,10 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false },
-                LayoutEdge { from: 0, to: 2, reversed: false },
-                LayoutEdge { from: 1, to: 3, reversed: false },
-                LayoutEdge { from: 2, to: 3, reversed: false },
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None },
+                LayoutEdge { from: 0, to: 2, reversed: false, label_size: None },
+                LayoutEdge { from: 1, to: 3, reversed: false, label_size: None },
+                LayoutEdge { from: 2, to: 3, reversed: false, label_size: None },
             ],
         };
         graph.nodes[0].rank = Some(0);

@@ -185,7 +185,7 @@ mod tests {
     fn short_edge_unchanged() {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
-            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false, label_size: None }],
         };
         let mut ranks = RankSystem {
             layers: vec![vec![0], vec![1]],
@@ -205,7 +205,7 @@ mod tests {
     fn long_edge_gets_dummies() {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
-            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false, label_size: None }],
         };
         let mut ranks = RankSystem {
             layers: vec![vec![0], vec![], vec![], vec![1]],
@@ -228,8 +228,8 @@ mod tests {
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1), node(2), node(3)],
             edges: vec![
-                LayoutEdge { from: 0, to: 1, reversed: false }, // short: rank 0->1
-                LayoutEdge { from: 0, to: 3, reversed: false }, // long: rank 0->3
+                LayoutEdge { from: 0, to: 1, reversed: false, label_size: None }, // short: rank 0->1
+                LayoutEdge { from: 0, to: 3, reversed: false, label_size: None }, // long: rank 0->3
             ],
         };
         let mut ranks = RankSystem {
@@ -255,7 +255,7 @@ mod tests {
         // report LayoutError::MissingRank.
         let mut graph = LayoutGraph {
             nodes: vec![node(0), node(1)],
-            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false }],
+            edges: vec![LayoutEdge { from: 0, to: 1, reversed: false, label_size: None }],
         };
         let mut ranks = RankSystem { layers: vec![] };
         // Note: node ranks are never set here.
