@@ -38,6 +38,7 @@ impl Default for CoordConfig {
 /// Algorithm selection for x-coordinate assignment.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CoordAlgorithm {
     /// Weighted median relaxation with compaction (simpler, O(N·passes))
     #[default]
@@ -238,7 +239,7 @@ fn median_relax_x_coords(
                 } else {
                     let min_x = x + prev_extent / 2.0 + extents[node_id] / 2.0 + h_gap;
                     let pref = preferred_x[node_id].unwrap_or(x_coords[node_id]);
-                    x = pref.max(min_x - extents[node_id] / 2.0);
+                    x = pref.max(min_x);
                 }
                 x_coords[node_id] = x;
                 prev_extent = extents[node_id];
@@ -1302,5 +1303,57 @@ mod tests {
         let mid_0_3 = (graph.nodes[0].x + graph.nodes[3].x) / 2.0;
         let mid_1_2 = (graph.nodes[1].x + graph.nodes[2].x) / 2.0;
         assert!((mid_0_3 - mid_1_2).abs() < 0.01, "diamond should be exactly symmetric");
+    }
+
+    /// Regression test for a bug the property suite in
+    /// `tests/pipeline_properties.rs` found: `median_relax_x_coords`'s
+    /// per-layer compaction pass computed `min_x` (the minimum center-x
+    /// for a node, including its own half-width) and then immediately
+    /// subtracted that same half-width back off before applying it as a
+    /// floor via `.max()` — silently discarding the current node's own
+    /// half-width from the separation requirement it had just computed.
+    /// The effect: two same-layer siblings could end up exactly one
+    /// sibling's half-width closer together than `h_gap` requires, once
+    /// `relax_passes >= 1` actually exercised the compaction loop (the
+    /// initial, pre-relaxation placement earlier in the same function was
+    /// unaffected, which is why this needed >0 relax passes to surface).
+    #[test]
+    fn median_relax_no_sibling_overlap() {
+        // Two siblings in rank 0 (one much taller than the other, so the
+        // bug — which only drops a *width* term, and only on this axis —
+        // isn't masked by both nodes happening to be the same size), a
+        // third node in rank 1 pulling sibling 1 toward it so at least one
+        // relax pass actually moves something.
+        let mut graph = LayoutGraph {
+            nodes: vec![node(0), node(1), node(2)],
+            edges: vec![LayoutEdge { from: 1, to: 2, reversed: false, label_size: None }],
+        };
+        graph.nodes[0].width = 4.0;
+        graph.nodes[1].width = 4.0;
+        graph.nodes[2].width = 4.0;
+        graph.nodes[0].rank = Some(0);
+        graph.nodes[1].rank = Some(0);
+        graph.nodes[2].rank = Some(1);
+        graph.nodes[0].order = Some(0);
+        graph.nodes[1].order = Some(1);
+        graph.nodes[2].order = Some(0);
+
+        let ranks = RankSystem {
+            layers: vec![vec![0, 1], vec![2]],
+        };
+        let config = CoordConfig {
+            algorithm: CoordAlgorithm::MedianRelax,
+            h_gap: 0.0,
+            relax_passes: 2,
+            ..Default::default()
+        };
+        assign_coordinates(&mut graph, &ranks, &config).unwrap();
+
+        let gap = (graph.nodes[1].x - graph.nodes[0].x).abs();
+        let min_required = graph.nodes[0].width / 2.0 + config.h_gap + graph.nodes[1].width / 2.0;
+        assert!(
+            gap >= min_required - 0.01,
+            "siblings must be at least half-width + h_gap apart, got gap={gap}, required={min_required}"
+        );
     }
 }

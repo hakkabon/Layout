@@ -25,16 +25,25 @@ use crate::{
 };
 use std::collections::HashMap;
 
+/// A single node, keyed by the caller's own opaque id (not necessarily
+/// dense or zero-based — see the module docs for why).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiNode {
+    /// The caller's own id for this node. Echoed back in `FfiPosition`
+    /// and every `FfiEdgeRoute`/`FfiEdge` that touches it.
     pub id: u64,
+    /// Visual width, used by coordinate assignment's separation math.
     pub width: f32,
+    /// Visual height, used by coordinate assignment's separation math.
     pub height: f32,
 }
 
+/// A single edge, referencing nodes by the caller's own opaque ids.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiEdge {
+    /// Source node's caller-assigned id.
     pub from: u64,
+    /// Target node's caller-assigned id.
     pub to: u64,
     /// Optional label width for obstacle-free label placement.
     pub label_width: Option<f32>,
@@ -42,9 +51,12 @@ pub struct FfiEdge {
     pub label_height: Option<f32>,
 }
 
+/// Mirrors [`CoordAlgorithm`] across the FFI boundary.
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum FfiAlgorithm {
+    /// Weighted median relaxation with compaction (simpler, O(N·passes)).
     MedianRelax,
+    /// Brandes-Köpf alignment averaging (better quality, O(N)).
     BrandesKopf,
 }
 
@@ -57,10 +69,14 @@ impl From<FfiAlgorithm> for CoordAlgorithm {
     }
 }
 
+/// Mirrors [`RoutingStyle`] across the FFI boundary.
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum FfiRoutingStyle {
+    /// Straight line, 2 points only — ignores any dummy waypoints.
     Straight,
+    /// Right-angle polyline through dummy midpoints.
     Orthogonal,
+    /// Smooth cubic bezier through dummy waypoints.
     Bezier,
 }
 
@@ -74,9 +90,12 @@ impl From<FfiRoutingStyle> for RoutingStyle {
     }
 }
 
+/// Mirrors [`LayoutDirection`] across the FFI boundary.
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum FfiDirection {
+    /// Rank 0 at the top, increasing ranks flow downward.
     TopToBottom,
+    /// Rank 0 at the left, increasing ranks flow rightward.
     LeftToRight,
 }
 
@@ -89,75 +108,126 @@ impl From<FfiDirection> for LayoutDirection {
     }
 }
 
+/// Tuning knobs for one `layout()` call.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiConfig {
+    /// Minimum gap between adjacent siblings' edges (not centers) within a
+    /// layer.
     pub h_gap: f32,
+    /// Minimum gap between adjacent ranks' edges (not centers).
     pub v_gap: f32,
+    /// Number of median-relaxation passes; ignored when `algorithm` is
+    /// `BrandesKopf`. Higher values straighten edges further at the cost
+    /// of more compute.
     pub relax_passes: u32,
     /// Barycenter sweep count for crossing reduction. 4 is a reasonable
     /// default; raise it for a "final" layout, lower it while the user is
     /// interactively editing the graph.
     pub sweeps: u32,
+    /// Which coordinate-assignment algorithm to use.
     pub algorithm: FfiAlgorithm,
+    /// How to draw edges between their waypoints.
     pub routing: FfiRoutingStyle,
+    /// Which way the graph flows.
     pub direction: FfiDirection,
 }
 
+/// A 2D point in the layout's own coordinate space (origin-centered — see
+/// the `Swift-Layout` README for how a consumer maps this onto a canvas).
 #[derive(Debug, Clone, Copy, uniffi::Record)]
 pub struct FfiPoint {
+    /// X coordinate.
     pub x: f32,
+    /// Y coordinate.
     pub y: f32,
 }
 
+/// An axis-aligned bounding box, accounting for each node's actual
+/// width/height (not just its center) — see [`FfiLayoutResult::bounds`].
 #[derive(Debug, Clone, Copy, uniffi::Record)]
 pub struct FfiRect {
+    /// Minimum x across every node and route waypoint.
     pub min_x: f32,
+    /// Minimum y across every node and route waypoint.
     pub min_y: f32,
+    /// Maximum x across every node and route waypoint.
     pub max_x: f32,
+    /// Maximum y across every node and route waypoint.
     pub max_y: f32,
+    /// `max_x - min_x`.
     pub width: f32,
+    /// `max_y - min_y`.
     pub height: f32,
 }
 
+/// Arrowhead geometry at an edge's target end: a tip point plus two wing
+/// vertices, ready to fill as a triangle.
 #[derive(Debug, Clone, Copy, uniffi::Record)]
 pub struct FfiArrowhead {
+    /// Tip point where the arrow touches the target node boundary.
     pub tip: FfiPoint,
     /// Tangent angle in radians (pointing in the direction of the edge flow).
     pub angle: f32,
+    /// Left wing endpoint.
     pub left: FfiPoint,
+    /// Right wing endpoint.
     pub right: FfiPoint,
 }
 
+/// One segment of a routed edge's path, as an explicit drawing primitive
+/// (an alternative to walking `FfiEdgeRoute::waypoints` yourself and
+/// guessing which style connects them).
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum FfiPathSegment {
+    /// A straight line between two points.
     Line {
+        /// Segment start point.
         start: FfiPoint,
+        /// Segment end point.
         end: FfiPoint,
     },
+    /// A cubic bezier curve between two points with two control points.
     CubicCurve {
+        /// Curve start point.
         start: FfiPoint,
+        /// First control point.
         control1: FfiPoint,
+        /// Second control point.
         control2: FfiPoint,
+        /// Curve end point.
         end: FfiPoint,
     },
 }
 
+/// A node's final assigned position, keyed by the caller's own id.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiPosition {
+    /// The caller's own id for this node, as given in `FfiNode::id`.
     pub id: u64,
+    /// Assigned x coordinate.
     pub x: f32,
+    /// Assigned y coordinate.
     pub y: f32,
 }
 
+/// A single edge's final routed path, keyed by the caller's own ids.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiEdgeRoute {
+    /// Source node's caller-assigned id, as given in `FfiEdge::from`.
     pub from: u64,
+    /// Target node's caller-assigned id, as given in `FfiEdge::to`.
     pub to: u64,
     /// True if this edge was reversed by cycle breaking; draw the
     /// arrowhead at the `from` end rather than the `to` end.
     pub reversed: bool,
+    /// Whether this route represents a self-loop (`from == to`).
     pub is_self_loop: bool,
+    /// Waypoints from source to target — see `EdgeRoute::waypoints` for
+    /// how these are packed per `routing` style.
     pub waypoints: Vec<FfiPoint>,
+    /// The same path as `waypoints`, decomposed into explicit line/curve
+    /// segments — use this instead of `waypoints` if you'd rather not
+    /// re-derive segment boundaries from the routing style yourself.
     pub segments: Vec<FfiPathSegment>,
     /// Precomputed arrowhead geometry (tip + wing vertices) at the target end.
     pub arrowhead: Option<FfiArrowhead>,
@@ -165,15 +235,24 @@ pub struct FfiEdgeRoute {
     pub label_position: Option<FfiPoint>,
 }
 
+/// Everything `layout()` returns for one graph.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiLayoutResult {
+    /// Every input node's final position, keyed by the caller's own id.
     pub positions: Vec<FfiPosition>,
+    /// Every input edge's final routed path (excluding self-loops — see
+    /// `self_loops` below).
     pub routes: Vec<FfiEdgeRoute>,
     /// Self-loop edges extracted before layout (see module docs).
     pub self_loops: Vec<FfiEdge>,
+    /// The graph's overall bounding box, accounting for each node's real
+    /// width/height.
     pub bounds: FfiRect,
 }
 
+/// Everything that can go wrong calling `layout()` — either the input
+/// graph was invalid, or the engine panicked internally (a bug, not bad
+/// input; see the variant docs).
 #[derive(Debug, uniffi::Error)]
 #[uniffi(flat_error)]
 pub enum FfiLayoutError {

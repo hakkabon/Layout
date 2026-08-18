@@ -1,4 +1,5 @@
 //! Layout engine modules
+#![warn(missing_docs)]
 pub mod types;
 pub mod validate;
 pub mod cycles;

@@ -1,33 +1,65 @@
 //! Shared types for the layout engine.
+
+/// Dense, zero-based index into [`LayoutGraph::nodes`]. Every phase in this
+/// crate indexes nodes directly by this value, so `graph.nodes[id].id ==
+/// id` must always hold — see [`LayoutGraph::add_node`].
 pub type NodeId = usize;
+/// Index of a layer within [`RankSystem::layers`], assigned by
+/// `assign_ranks`.
 pub type RankId = usize;
+
+/// Whether a [`LayoutNode`] is part of the original input graph, or was
+/// synthesized by `insert_dummy_nodes` as a waypoint for an edge spanning
+/// more than one rank.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub enum NodeType {
+    /// A node from the original input graph.
     #[default]
     Normal,
+    /// A synthesized waypoint node inserted by `insert_dummy_nodes` so a
+    /// long edge can be routed rank-by-rank. Not part of the caller's
+    /// original graph; excluded from most caller-facing output.
     Dummy,
 }
 
+/// A single node in the graph being laid out.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default)]
 pub struct LayoutNode {
+    /// This node's id — must equal its own index in [`LayoutGraph::nodes`].
+    /// Prefer [`LayoutGraph::add_node`] over constructing this by hand to
+    /// avoid violating that invariant.
     pub id: NodeId,
+    /// Whether this is an original node or a dummy waypoint (see
+    /// [`NodeType`]).
     pub node_type: NodeType,
+    /// Visual width, used by coordinate assignment's separation math.
     pub width: f32,
+    /// Visual height, used by coordinate assignment's separation math.
     pub height: f32,
+    /// Assigned x-coordinate. Meaningless until `assign_coordinates` has
+    /// run.
     pub x: f32,
+    /// Assigned y-coordinate. Meaningless until `assign_coordinates` has
+    /// run.
     pub y: f32,
+    /// Which layer this node belongs to. `None` until `assign_ranks` has
+    /// run.
     pub rank: Option<RankId>,
     /// Position of this node within its rank's layer. Used by, and updated
     /// by, the crossing-reduction pass. `None` until `assign_ranks` has run.
     pub order: Option<usize>,
 }
 
+/// A single edge in the graph being laid out.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct LayoutEdge {
+    /// Source node id.
     pub from: NodeId,
+    /// Target node id.
     pub to: NodeId,
     /// True if this edge was reversed by [`break_cycles`] and should be
     /// drawn with its arrowhead at the visually higher end.
@@ -37,10 +69,15 @@ pub struct LayoutEdge {
     pub label_size: Option<(f32, f32)>,
 }
 
+/// A graph to lay out: a dense, zero-indexed node list plus a set of edges
+/// between them.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Default, Debug, Clone)]
 pub struct LayoutGraph {
+    /// All nodes, indexed by [`NodeId`] — `nodes[id].id == id` must hold
+    /// for every node (see [`LayoutGraph::add_node`]).
     pub nodes: Vec<LayoutNode>,
+    /// All edges between those nodes.
     pub edges: Vec<LayoutEdge>,
 }
 
@@ -91,14 +128,22 @@ impl LayoutGraph {
     }
 }
 
+/// The graph's nodes grouped by rank, in intra-layer order. Produced by
+/// `assign_ranks`, consumed by every phase after it.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Default, Debug, Clone)]
 pub struct RankSystem {
+    /// `layers[rank]` is the ordered list of node ids in that layer.
     pub layers: Vec<Vec<NodeId>>,
 }
 
+/// Everything that can go wrong running the layout pipeline. Every variant
+/// describes a problem with the *input* to some phase (a malformed graph,
+/// or a phase called out of order) — the pipeline itself doesn't fail for
+/// any other reason.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[non_exhaustive]
 pub enum LayoutError {
     /// The input graph has a cycle that survived cycle breaking (or
     /// `break_cycles` was never run).
@@ -107,9 +152,19 @@ pub enum LayoutError {
     /// directly by `NodeId`, so ids must be a dense, zero-based sequence
     /// matching each node's position in `graph.nodes`. Prefer
     /// `LayoutGraph::add_node` to avoid this.
-    InvalidNodeId { index: usize, id: NodeId },
+    InvalidNodeId {
+        /// The node's actual position in `graph.nodes`.
+        index: usize,
+        /// The mismatched id found at that position.
+        id: NodeId,
+    },
     /// An edge references a node id that doesn't exist in `graph.nodes`.
-    DanglingEdge { from: NodeId, to: NodeId },
+    DanglingEdge {
+        /// The edge's source id.
+        from: NodeId,
+        /// The edge's target id.
+        to: NodeId,
+    },
     /// A self-loop (`from == to`) was found. Use
     /// `LayoutGraph::extract_self_loops` to remove these before ranking.
     SelfLoop(NodeId),
@@ -147,9 +202,14 @@ impl std::error::Error for LayoutError {}
 /// Layout direction.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum LayoutDirection {
+    /// Rank 0 at the top, increasing ranks flow downward. The x-axis is
+    /// used for intra-layer (sibling) separation.
     #[default]
     TopToBottom,
+    /// Rank 0 at the left, increasing ranks flow rightward. The y-axis is
+    /// used for intra-layer (sibling) separation.
     LeftToRight,
 }
 
@@ -157,11 +217,17 @@ pub enum LayoutDirection {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LayoutRect {
+    /// Minimum x across every node and route waypoint.
     pub min_x: f32,
+    /// Minimum y across every node and route waypoint.
     pub min_y: f32,
+    /// Maximum x across every node and route waypoint.
     pub max_x: f32,
+    /// Maximum y across every node and route waypoint.
     pub max_y: f32,
+    /// `max_x - min_x`.
     pub width: f32,
+    /// `max_y - min_y`.
     pub height: f32,
 }
 
@@ -171,14 +237,17 @@ pub struct LayoutRect {
 pub struct Arrowhead {
     /// Tip point where the arrow touches the target node boundary.
     pub tip_x: f32,
+    /// Tip point where the arrow touches the target node boundary.
     pub tip_y: f32,
     /// Tangent angle in radians (pointing in the direction of the edge flow).
     pub angle: f32,
     /// Left wing endpoint.
     pub left_x: f32,
+    /// Left wing endpoint.
     pub left_y: f32,
     /// Right wing endpoint.
     pub right_x: f32,
+    /// Right wing endpoint.
     pub right_y: f32,
 }
 
@@ -187,10 +256,17 @@ pub struct Arrowhead {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct EdgeChain {
-    pub source: NodeId,   // original edge source
-    pub target: NodeId,   // original edge target
-    pub reversed: bool,   // mirrored from the LayoutEdge
+    /// Original edge's source node id.
+    pub source: NodeId,
+    /// Original edge's target node id.
+    pub target: NodeId,
+    /// Mirrored from the originating [`LayoutEdge::reversed`].
+    pub reversed: bool,
+    /// Whether this chain represents a self-loop (`source == target`),
+    /// routed specially rather than through the usual rank-by-rank chain.
     pub is_self_loop: bool,
+    /// Optional label width/height, mirrored from the originating
+    /// [`LayoutEdge::label_size`], for obstacle-free label placement.
     pub label_size: Option<(f32, f32)>,
     /// All waypoint nodes in order: [source, dummy₁, dummy₂, …, target].
     pub chain: Vec<NodeId>,
@@ -199,20 +275,28 @@ pub struct EdgeChain {
 /// Routing style for edge drawing.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum RoutingStyle {
-    Straight,     // straight line, 2 points only
-    Orthogonal,   // right-angle polyline through dummy midpoints
+    /// Straight line, 2 points only — ignores any dummy waypoints.
+    Straight,
+    /// Right-angle polyline through dummy midpoints.
+    Orthogonal,
+    /// Smooth cubic bezier through dummy waypoints.
     #[default]
-    Bezier,       // smooth cubic bezier through dummy waypoints
+    Bezier,
 }
 
 /// Route for a single edge.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct EdgeRoute {
+    /// Original edge's source node id.
     pub source: NodeId,
+    /// Original edge's target node id.
     pub target: NodeId,
+    /// Mirrored from the originating [`LayoutEdge::reversed`].
     pub reversed: bool,
+    /// Whether this route represents a self-loop.
     pub is_self_loop: bool,
     /// Waypoints from source to target.
     /// - Straight:    exactly 2 points (source attachment, target attachment).
