@@ -217,22 +217,6 @@ layout_engine = { path = "...", features = ["serde"] }
 
 Useful as a quick JSON bridge to another language (e.g. serialize a `LayoutGraph` + `Vec<EdgeRoute>` to JSON and decode it into `Codable` structs on the Swift side) before committing to a binding generator, or as a format for golden-file tests.
 
-## Breaking Changes (v0.2)
-
-- `insert_dummy_nodes`, `order_layers`, `assign_coordinates`, and `route_edges` now return `Result<_, LayoutError>` instead of panicking on missing ranks or out-of-bounds node ids.
-- `insert_dummy_nodes` and `order_layers` now take `ranks: &mut RankSystem` (previously `&RankSystem` in some call sites, inconsistently).
-- `LayoutError` gained `InvalidNodeId`, `DanglingEdge`, `SelfLoop`, and `MissingRank` variants; `validate_graph` now returns the specific variant instead of overloading `CyclicGraph` for everything.
-- Added `LayoutGraph::add_node` and `LayoutGraph::extract_self_loops`.
-- `LayoutNode` and `NodeType` now implement `Default`.
-- Fixed a real layout bug in Brandes-Köpf coordinate assignment where siblings with identical local structure (e.g. two children of the same parent) could average onto the same x-coordinate and overlap; see `coordinates::tests::brandes_kopf_no_sibling_overlap`.
-- `order_layers`'s internal transpose pass is now capped at `MAX_TRANSPOSE_PASSES` (100) rather than looping to a fixed point unconditionally.
-
-## Breaking Changes (v2.0)
-
-- `CoordinateConfig` replaced with `CoordConfig` supporting multiple algorithms
-- Added `CoordAlgorithm` enum for algorithm selection
-- `LayoutEdge` now includes a `reversed` field for cycle tracking
-
 ## License
 
 MIT License - see LICENSE file for details.
